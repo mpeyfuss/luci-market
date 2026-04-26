@@ -4,6 +4,7 @@ pragma solidity 0.8.30;
 import {Ownable2Step, Ownable} from "@openzeppelin-contracts-5.6.1/access/Ownable2Step.sol";
 import {ReentrancyGuardTransient} from "@openzeppelin-contracts-5.6.1/utils/ReentrancyGuardTransient.sol";
 import {IERC721} from "@openzeppelin-contracts-5.6.1/token/ERC721/IERC721.sol";
+import {Math} from "@openzeppelin-contracts-5.6.1/utils/math/Math.sol";
 
 /// @title SamSprattMarketplace
 /// @notice A marketplace for buying and selling ERC721 tokens from the artist
@@ -15,19 +16,21 @@ contract SamSprattMarketplace is Ownable2Step, ReentrancyGuardTransient {
     //////////////////////////////////////////////////////////////*/
 
     struct Listing {
-        address seller;    // slot 0 (20 bytes)
-        uint64 expiresAt;  // slot 0 (8 bytes)
-        uint256 price;     // slot 1 (32 bytes)
+        address seller; // slot 0 (20 bytes)
+        uint64 expiresAt; // slot 0 (8 bytes)
+        uint256 price; // slot 1 (32 bytes)
+        address buyer; // slot 2 (20 bytes) - address(0) means anyone can buy
     }
 
     struct Bid {
-        uint192 amount;    // more than enough for any ETH amount
-        uint64 expiresAt;  // 0 = no expiry
+        uint192 amount; // more than enough for any ETH amount
+        uint64 expiresAt; // 0 = no expiry
     }
 
     struct LastSale {
         address buyer;
         uint256 price;
+        uint64 soldAt;
     }
 
     struct Token {
@@ -35,7 +38,11 @@ contract SamSprattMarketplace is Ownable2Step, ReentrancyGuardTransient {
         uint256 tokenId;
     }
 
-    enum BidType { TOKEN, COLLECTION, TRAIT }
+    enum BidType {
+        TOKEN,
+        COLLECTION,
+        TRAIT
+    }
 
     struct BidSelector {
         BidType bidType;
@@ -54,8 +61,8 @@ contract SamSprattMarketplace is Ownable2Step, ReentrancyGuardTransient {
     /// @notice Maximum royalty percentage (10%)
     uint256 public constant MAX_ROYALTY_BPS = 1000;
 
-    /// @notice Minimum royalty charged on any profitable resale (0.5%)
-    uint256 public constant MIN_ROYALTY_BPS = 50; 
+    /// @notice Minimum hold time limit
+    uint256 public constant MIN_HOLD_TIME_LIMIT = 180 days;
 
     /// @notice Maximum listing duration to avoid stale listings
     uint256 public constant MAX_LISTING_DURATION = 180 days;
@@ -69,8 +76,11 @@ contract SamSprattMarketplace is Ownable2Step, ReentrancyGuardTransient {
     /// @notice Whitelisted collections that can be traded
     mapping(address collection => bool) public allowedCollections;
 
-    /// @notice Whitelisted collections that can be traded
+    /// @notice Collections trait config
     mapping(address collection => uint32) public collectionTraitConfigs;
+
+    /// @notice Collections minimum hold duration for scaled royalties
+    mapping(address collection => uint64) public collectionMinHoldTimes;
 
     /// @notice Listings: collection => tokenId => Listing
     mapping(address collection => mapping(uint256 tokenId => Listing)) public listings;
@@ -94,31 +104,80 @@ contract SamSprattMarketplace is Ownable2Step, ReentrancyGuardTransient {
                                 EVENTS
     //////////////////////////////////////////////////////////////*/
 
-    event Listed(address indexed collection, uint256 indexed tokenId, address indexed seller, uint256 price, uint64 expiresAt);
+    event Listed(
+        address indexed collection,
+        uint256 indexed tokenId,
+        address indexed seller,
+        uint256 price,
+        uint64 expiresAt,
+        address buyer
+    );
     event Delisted(address indexed collection, uint256 indexed tokenId, address indexed seller);
-    event Sold(address indexed collection, uint256 indexed tokenId, address indexed buyer, address seller, uint256 price, uint256 royaltyAmount);
+    event Sold(
+        address indexed collection,
+        uint256 indexed tokenId,
+        address indexed buyer,
+        address seller,
+        uint256 price,
+        uint256 royaltyAmount
+    );
 
     event CollectionBidPlaced(address indexed collection, address indexed bidder, uint256 amount, uint64 expiresAt);
     event CollectionBidIncreased(address indexed collection, address indexed bidder, uint256 newAmount);
     event CollectionBidExtended(address indexed collection, address indexed bidder, uint64 newExpiresAt);
     event CollectionBidCanceled(address indexed collection, address indexed bidder);
-    event CollectionBidAccepted(address indexed collection, uint256 indexed tokenId, address seller, address indexed bidder, uint256 price, uint256 royaltyAmount);
+    event CollectionBidAccepted(
+        address indexed collection,
+        uint256 indexed tokenId,
+        address seller,
+        address indexed bidder,
+        uint256 price,
+        uint256 royaltyAmount
+    );
 
-    event TokenBidPlaced(address indexed collection, uint256 indexed tokenId, address indexed bidder, uint256 amount, uint64 expiresAt);
-    event TokenBidIncreased(address indexed collection, uint256 indexed tokenId, address indexed bidder, uint256 newAmount);
-    event TokenBidExtended(address indexed collection, uint256 indexed tokenId, address indexed bidder, uint64 newExpiresAt);
+    event TokenBidPlaced(
+        address indexed collection, uint256 indexed tokenId, address indexed bidder, uint256 amount, uint64 expiresAt
+    );
+    event TokenBidIncreased(
+        address indexed collection, uint256 indexed tokenId, address indexed bidder, uint256 newAmount
+    );
+    event TokenBidExtended(
+        address indexed collection, uint256 indexed tokenId, address indexed bidder, uint64 newExpiresAt
+    );
     event TokenBidCanceled(address indexed collection, uint256 indexed tokenId, address indexed bidder);
-    event TokenBidAccepted(address indexed collection, uint256 indexed tokenId, address seller, address indexed bidder, uint256 price, uint256 royaltyAmount);
+    event TokenBidAccepted(
+        address indexed collection,
+        uint256 indexed tokenId,
+        address seller,
+        address indexed bidder,
+        uint256 price,
+        uint256 royaltyAmount
+    );
 
-    event TraitBidPlaced(address indexed collection, uint256 indexed traitKey, address indexed bidder, uint256 amount, uint64 expiresAt);
-    event TraitBidIncreased(address indexed collection, uint256 indexed traitKey, address indexed bidder, uint256 newAmount);
-    event TraitBidExtended(address indexed collection, uint256 indexed traitKey, address indexed bidder, uint64 newExpiresAt);
+    event TraitBidPlaced(
+        address indexed collection, uint256 indexed traitKey, address indexed bidder, uint256 amount, uint64 expiresAt
+    );
+    event TraitBidIncreased(
+        address indexed collection, uint256 indexed traitKey, address indexed bidder, uint256 newAmount
+    );
+    event TraitBidExtended(
+        address indexed collection, uint256 indexed traitKey, address indexed bidder, uint64 newExpiresAt
+    );
     event TraitBidCanceled(address indexed collection, uint256 indexed traitKey, address indexed bidder);
-    event TraitBidAccepted(address indexed collection, uint256 indexed tokenId, address seller, address indexed bidder, uint256 traitKey, uint256 price, uint256 royaltyAmount);
+    event TraitBidAccepted(
+        address indexed collection,
+        uint256 indexed tokenId,
+        address seller,
+        address indexed bidder,
+        uint256 traitKey,
+        uint256 price,
+        uint256 royaltyAmount
+    );
 
     event CollectionAdded(address indexed collection);
     event CollectionRemoved(address indexed collection);
     event CollectionTraitConfigSet(address indexed collection, uint32 config);
+    event CollectionMinHoldTimeSet(address indexed collection, uint64 minHoldTime);
     event TraitsSet(address indexed collection, uint256[] tokenIds, uint32[] traits);
     event RoyaltyRecipientUpdated(address newRecipient);
     event PauseToggled(bool paused);
@@ -140,10 +199,12 @@ contract SamSprattMarketplace is Ownable2Step, ReentrancyGuardTransient {
     error IsPaused();
     error ListingExpired();
     error ListingOwnerNotTokenOwner();
+    error MinHoldTimeTooLong();
     error NotApproved();
     error NoBidExists();
     error NotListed();
     error NotListingOwner();
+    error NotPrivateBuyer();
     error NotTokenOwner();
     error TraitMismatch();
     error TraitNotSet();
@@ -179,8 +240,10 @@ contract SamSprattMarketplace is Ownable2Step, ReentrancyGuardTransient {
     }
 
     /// @notice Add a collection to the whitelist
+    /// @notice Defaults holding period to 30 days
     function addCollection(address collection) external onlyOwner {
         allowedCollections[collection] = true;
+        collectionMinHoldTimes[collection] = 30 days;
         emit CollectionAdded(collection);
     }
 
@@ -197,6 +260,15 @@ contract SamSprattMarketplace is Ownable2Step, ReentrancyGuardTransient {
         emit RoyaltyRecipientUpdated(newRecipient);
     }
 
+    /// @notice Set a collection min hold time
+    function setCollectionMinHoldTime(address collection, uint64 minHoldTime) external onlyOwner {
+        if (!allowedCollections[collection]) revert CollectionNotAllowed();
+        if (minHoldTime > MIN_HOLD_TIME_LIMIT) revert MinHoldTimeTooLong();
+        collectionMinHoldTimes[collection] = minHoldTime;
+
+        emit CollectionMinHoldTimeSet(collection, minHoldTime);
+    }
+
     /// @notice Set a collection trait config (which traits are allowed)
     function setCollectionTraitsConfig(address collection, uint32 config) external onlyOwner {
         if (!allowedCollections[collection]) revert CollectionNotAllowed();
@@ -208,7 +280,10 @@ contract SamSprattMarketplace is Ownable2Step, ReentrancyGuardTransient {
     /// @notice Batch set traits for tokens in a collection
     /// @dev Since this is a priveledged function, it's expected that the traits include the properly
     ///      configured bit 7 for each trait in the encoded traits
-    function setTraits(address collection, uint256[] calldata tokenIds, uint32[] calldata traitsArray) external onlyOwner {
+    function setTraits(address collection, uint256[] calldata tokenIds, uint32[] calldata traitsArray)
+        external
+        onlyOwner
+    {
         if (!allowedCollections[collection]) revert CollectionNotAllowed();
         if (tokenIds.length != traitsArray.length) revert ArrayLengthMismatch();
 
@@ -227,7 +302,11 @@ contract SamSprattMarketplace is Ownable2Step, ReentrancyGuardTransient {
     /// @notice List an NFT for sale
     /// @dev Listings should be one at a time - cleaner UX.
     /// @dev This can be used to update a listing or override an existing listing that may have been created by a previous owner.
-    function list(address collection, uint256 tokenId, uint256 price, uint64 expiresAt) external nonReentrant whenNotPaused {
+    function list(address collection, uint256 tokenId, uint256 price, uint64 expiresAt, address buyer)
+        external
+        nonReentrant
+        whenNotPaused
+    {
         // checks
         if (!allowedCollections[collection]) revert CollectionNotAllowed();
         if (price == 0) revert InvalidPrice();
@@ -239,13 +318,9 @@ contract SamSprattMarketplace is Ownable2Step, ReentrancyGuardTransient {
         if (!_isApproved(nft, msg.sender, tokenId)) revert NotApproved();
 
         // effects
-        listings[collection][tokenId] = Listing({
-            seller: msg.sender,
-            expiresAt: expiresAt,
-            price: price
-        });
+        listings[collection][tokenId] = Listing({seller: msg.sender, expiresAt: expiresAt, price: price, buyer: buyer});
 
-        emit Listed(collection, tokenId, msg.sender, price, expiresAt);
+        emit Listed(collection, tokenId, msg.sender, price, expiresAt, buyer);
     }
 
     /// @notice Extend listing(s)
@@ -261,12 +336,13 @@ contract SamSprattMarketplace is Ownable2Step, ReentrancyGuardTransient {
         // effects
         for (uint256 i = 0; i < num; ++i) {
             Token memory token = tokens[i];
+            if (!allowedCollections[token.collection]) revert CollectionNotAllowed();
             Listing storage listing = listings[token.collection][token.tokenId];
             if (listing.seller != msg.sender) revert NotListingOwner();
 
             listing.expiresAt = expiresAt;
 
-            emit Listed(token.collection, token.tokenId, msg.sender, listing.price, expiresAt);
+            emit Listed(token.collection, token.tokenId, msg.sender, listing.price, expiresAt, listing.buyer);
         }
     }
 
@@ -286,8 +362,10 @@ contract SamSprattMarketplace is Ownable2Step, ReentrancyGuardTransient {
     /// @notice Buy a listed NFT
     function buy(address collection, uint256 tokenId) external payable nonReentrant whenNotPaused {
         // checks
+        if (!allowedCollections[collection]) revert CollectionNotAllowed();
         Listing memory listing = listings[collection][tokenId];
         if (listing.seller == address(0)) revert NotListed();
+        if (listing.buyer != address(0) && msg.sender != listing.buyer) revert NotPrivateBuyer();
         _checkListingNotExpired(listing.expiresAt);
         if (msg.value != listing.price) revert IncorrectPayment();
 
@@ -308,7 +386,12 @@ contract SamSprattMarketplace is Ownable2Step, ReentrancyGuardTransient {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Place a bid on a specific token
-    function placeTokenBid(address collection, uint256 tokenId, uint64 expiresAt) external payable nonReentrant whenNotPaused {
+    function placeTokenBid(address collection, uint256 tokenId, uint64 expiresAt)
+        external
+        payable
+        nonReentrant
+        whenNotPaused
+    {
         // checks
         if (!allowedCollections[collection]) revert CollectionNotAllowed();
         if (msg.value == 0) revert InvalidPrice();
@@ -316,10 +399,7 @@ contract SamSprattMarketplace is Ownable2Step, ReentrancyGuardTransient {
         if (expiresAt != 0 && expiresAt < block.timestamp) revert BidExpired();
 
         // effects
-        tokenBids[msg.sender][collection][tokenId] = Bid({
-            amount: uint192(msg.value),
-            expiresAt: expiresAt
-        });
+        tokenBids[msg.sender][collection][tokenId] = Bid({amount: uint192(msg.value), expiresAt: expiresAt});
 
         emit TokenBidPlaced(collection, tokenId, msg.sender, msg.value, expiresAt);
     }
@@ -328,6 +408,7 @@ contract SamSprattMarketplace is Ownable2Step, ReentrancyGuardTransient {
     /// @dev Prevents increasing an expired bid
     function increaseTokenBid(address collection, uint256 tokenId) external payable nonReentrant whenNotPaused {
         // checks
+        if (!allowedCollections[collection]) revert CollectionNotAllowed();
         if (msg.value == 0) revert InvalidPrice();
 
         Bid storage bid = tokenBids[msg.sender][collection][tokenId];
@@ -343,8 +424,13 @@ contract SamSprattMarketplace is Ownable2Step, ReentrancyGuardTransient {
 
     /// @notice Accept a token bid by selling your NFT to the bidder
     /// @dev Frontrunning is prevented with `minAmount`
-    function acceptTokenBid(address collection, uint256 tokenId, address bidder, uint256 minAmount) external nonReentrant whenNotPaused {
+    function acceptTokenBid(address collection, uint256 tokenId, address bidder, uint256 minAmount)
+        external
+        nonReentrant
+        whenNotPaused
+    {
         // checks
+        if (!allowedCollections[collection]) revert CollectionNotAllowed();
         Bid memory bid = tokenBids[bidder][collection][tokenId];
         if (bid.amount == 0) revert NoBidExists();
         _checkBidNotExpired(bid.expiresAt);
@@ -377,10 +463,7 @@ contract SamSprattMarketplace is Ownable2Step, ReentrancyGuardTransient {
         if (expiresAt != 0 && expiresAt < block.timestamp) revert BidExpired();
 
         // effects
-        collectionBids[msg.sender][collection] = Bid({
-            amount: uint192(msg.value),
-            expiresAt: expiresAt
-        });
+        collectionBids[msg.sender][collection] = Bid({amount: uint192(msg.value), expiresAt: expiresAt});
 
         emit CollectionBidPlaced(collection, msg.sender, msg.value, expiresAt);
     }
@@ -389,6 +472,7 @@ contract SamSprattMarketplace is Ownable2Step, ReentrancyGuardTransient {
     /// @dev Prevents increasing an expired bid
     function increaseCollectionBid(address collection) external payable nonReentrant whenNotPaused {
         // checks
+        if (!allowedCollections[collection]) revert CollectionNotAllowed();
         if (msg.value == 0) revert InvalidPrice();
 
         Bid storage bid = collectionBids[msg.sender][collection];
@@ -404,8 +488,13 @@ contract SamSprattMarketplace is Ownable2Step, ReentrancyGuardTransient {
 
     /// @notice Accept a collection bid by selling your NFT to the bidder
     /// @dev Frontrunning is prevented with `minAmount`
-    function acceptCollectionBid(address collection, uint256 tokenId, address bidder, uint256 minAmount) external nonReentrant whenNotPaused {
+    function acceptCollectionBid(address collection, uint256 tokenId, address bidder, uint256 minAmount)
+        external
+        nonReentrant
+        whenNotPaused
+    {
         // checks
+        if (!allowedCollections[collection]) revert CollectionNotAllowed();
         Bid memory bid = collectionBids[bidder][collection];
         if (bid.amount == 0) revert NoBidExists();
         _checkBidNotExpired(bid.expiresAt);
@@ -433,7 +522,12 @@ contract SamSprattMarketplace is Ownable2Step, ReentrancyGuardTransient {
     /// @param collection The collection address
     /// @param traitKey Encoded traits filter
     /// @param expiresAt Expiry timestamp (0 = no expiry)
-    function placeTraitBid(address collection, uint256 traitKey, uint64 expiresAt) external payable nonReentrant whenNotPaused {
+    function placeTraitBid(address collection, uint256 traitKey, uint64 expiresAt)
+        external
+        payable
+        nonReentrant
+        whenNotPaused
+    {
         // checks
         if (!allowedCollections[collection]) revert CollectionNotAllowed();
         if (msg.value == 0) revert InvalidPrice();
@@ -442,10 +536,7 @@ contract SamSprattMarketplace is Ownable2Step, ReentrancyGuardTransient {
         if (traitBids[msg.sender][collection][traitKey].amount > 0) revert BidAlreadyExists();
 
         // effects
-        traitBids[msg.sender][collection][traitKey] = Bid({
-            amount: uint192(msg.value),
-            expiresAt: expiresAt
-        });
+        traitBids[msg.sender][collection][traitKey] = Bid({amount: uint192(msg.value), expiresAt: expiresAt});
 
         emit TraitBidPlaced(collection, traitKey, msg.sender, msg.value, expiresAt);
     }
@@ -454,6 +545,8 @@ contract SamSprattMarketplace is Ownable2Step, ReentrancyGuardTransient {
     /// @dev Prevents increasing an expired bid
     function increaseTraitBid(address collection, uint256 traitKey) external payable nonReentrant whenNotPaused {
         // checks
+        if (!allowedCollections[collection]) revert CollectionNotAllowed();
+        if (!_validateTraitKey(traitKey, collectionTraitConfigs[collection])) revert InvalidTraitKey();
         if (msg.value == 0) revert InvalidPrice();
 
         Bid storage bid = traitBids[msg.sender][collection][traitKey];
@@ -469,19 +562,18 @@ contract SamSprattMarketplace is Ownable2Step, ReentrancyGuardTransient {
 
     /// @notice Accept a trait bid by selling your NFT to the bidder
     /// @dev Frontrunning is prevented with `minAmount`
-    function acceptTraitBid(
-        address collection,
-        uint256 tokenId,
-        address bidder,
-        uint256 traitKey,
-        uint256 minAmount
-    ) external nonReentrant whenNotPaused {
+    function acceptTraitBid(address collection, uint256 tokenId, address bidder, uint256 traitKey, uint256 minAmount)
+        external
+        nonReentrant
+        whenNotPaused
+    {
         // checks
+        if (!allowedCollections[collection]) revert CollectionNotAllowed();
         Bid memory bid = traitBids[bidder][collection][traitKey];
         if (bid.amount == 0) revert NoBidExists();
         _checkBidNotExpired(bid.expiresAt);
         if (bid.amount < minAmount) revert BidTooLow();
-
+        if (!_validateTraitKey(traitKey, collectionTraitConfigs[collection])) revert InvalidTraitKey();
         uint32 traits = tokenTraits[collection][tokenId];
         if (!_matchesTraitBid(traits, traitKey)) revert TraitMismatch();
 
@@ -514,29 +606,25 @@ contract SamSprattMarketplace is Ownable2Step, ReentrancyGuardTransient {
         // effects
         for (uint256 i = 0; i < num; ++i) {
             BidSelector memory bs = bidSelectors[i];
+            if (!allowedCollections[bs.collection]) revert CollectionNotAllowed();
             if (bs.bidType == BidType.TOKEN) {
                 // token bid
                 Bid storage tokenBid = tokenBids[msg.sender][bs.collection][bs.tokenId];
                 if (tokenBid.amount == 0) revert NoBidExists();
                 tokenBid.expiresAt = expiresAt;
                 emit TokenBidExtended(bs.collection, bs.tokenId, msg.sender, expiresAt);
-                
             } else if (bs.bidType == BidType.COLLECTION) {
-
                 // collection bid
                 Bid storage collectionBid = collectionBids[msg.sender][bs.collection];
                 if (collectionBid.amount == 0) revert NoBidExists();
                 collectionBid.expiresAt = expiresAt;
                 emit CollectionBidExtended(bs.collection, msg.sender, expiresAt);
-
             } else {
-
                 // trait bid
                 Bid storage traitBid = traitBids[msg.sender][bs.collection][bs.traitKey];
                 if (traitBid.amount == 0) revert NoBidExists();
                 traitBid.expiresAt = expiresAt;
                 emit TraitBidExtended(bs.collection, bs.traitKey, msg.sender, expiresAt);
-
             }
         }
     }
@@ -552,7 +640,7 @@ contract SamSprattMarketplace is Ownable2Step, ReentrancyGuardTransient {
         uint192 totalBidAmount = 0;
         for (uint256 i = 0; i < num; ++i) {
             BidSelector memory bs = bidSelectors[i];
-            
+
             if (bs.bidType == BidType.TOKEN) {
                 // token bid
                 totalBidAmount += _cancelTokenBid(msg.sender, bs.collection, bs.tokenId);
@@ -564,7 +652,7 @@ contract SamSprattMarketplace is Ownable2Step, ReentrancyGuardTransient {
                 totalBidAmount += _cancelTraitBid(msg.sender, bs.collection, bs.traitKey);
             }
         }
-        
+
         // interactions
         _safeTransferEth(msg.sender, totalBidAmount);
     }
@@ -572,7 +660,7 @@ contract SamSprattMarketplace is Ownable2Step, ReentrancyGuardTransient {
     /*//////////////////////////////////////////////////////////////
                         INTERNAL FUNCTIONS
     //////////////////////////////////////////////////////////////*/
-    
+
     /// @dev Helper for the modifier to reduce code size
     function _whenNotPaused() internal view {
         if (paused) revert IsPaused();
@@ -666,7 +754,10 @@ contract SamSprattMarketplace is Ownable2Step, ReentrancyGuardTransient {
     }
 
     /// @dev Cancel a trait bid and withdraw funds
-    function _cancelTraitBid(address sender, address collection, uint256 traitKey) internal returns (uint192 bidAmount) {
+    function _cancelTraitBid(address sender, address collection, uint256 traitKey)
+        internal
+        returns (uint192 bidAmount)
+    {
         bidAmount = traitBids[sender][collection][traitKey].amount;
         if (bidAmount == 0) revert NoBidExists();
 
@@ -689,10 +780,7 @@ contract SamSprattMarketplace is Ownable2Step, ReentrancyGuardTransient {
         uint256 sellerProceeds = salePrice - royalty;
 
         // Record this sale for dynamic royalties
-        lastSales[collection][tokenId] = LastSale({
-            buyer: buyer,
-            price: salePrice
-        });
+        lastSales[collection][tokenId] = LastSale({buyer: buyer, price: salePrice, soldAt: uint64(block.timestamp)});
 
         // Transfer NFT
         nft.safeTransferFrom(seller, buyer, tokenId);
@@ -706,17 +794,16 @@ contract SamSprattMarketplace is Ownable2Step, ReentrancyGuardTransient {
 
     /// @dev Calculate dynamic royalty based on profit since last marketplace sale.
     /// @dev If there was no last sale recorded, or the seller does not equal the last recorded buyer, then default to full royalties.
-    function _calculateRoyalty(
-        address collection,
-        uint256 tokenId,
-        address seller,
-        uint256 salePrice
-    ) internal view returns (uint256 royalty) {
+    function _calculateRoyalty(address collection, uint256 tokenId, address seller, uint256 salePrice)
+        internal
+        view
+        returns (uint256 royalty)
+    {
         LastSale memory lastSale = lastSales[collection][tokenId];
 
         // No cost basis: charge full royalty
         if (lastSale.buyer == address(0) || lastSale.buyer != seller) {
-            return (salePrice * MAX_ROYALTY_BPS) / BASIS;
+            return Math.mulDiv(salePrice, MAX_ROYALTY_BPS, BASIS);
         }
 
         uint256 lastPrice = lastSale.price;
@@ -726,15 +813,21 @@ contract SamSprattMarketplace is Ownable2Step, ReentrancyGuardTransient {
             return 0;
         }
 
-        // 2x or more profit: full MAX_ROYALTY_BPS
+        // Hasn't held long enough: charge full royalty to prevent wash trading where
+        // the trader is net positivity by minimizing royalties paid.
+        uint256 timeBetweenSales = block.timestamp - uint256(lastSale.soldAt);
+        if (timeBetweenSales < collectionMinHoldTimes[collection]) {
+            return Math.mulDiv(salePrice, MAX_ROYALTY_BPS, BASIS);
+        }
+
+        // 2x or more profit: full royalty
         if (salePrice >= lastPrice * 2) {
-            return (salePrice * MAX_ROYALTY_BPS) / BASIS;
+            return Math.mulDiv(salePrice, MAX_ROYALTY_BPS, BASIS);
         }
 
         // Linear scale between 1x and 2x last sale price
+        // Very small profits (< 10 wei) can still round to 0 royalty due to final truncation
         uint256 profit = salePrice - lastPrice;
-        uint256 royaltyBps = (profit * (MAX_ROYALTY_BPS - MIN_ROYALTY_BPS)) / lastPrice + MIN_ROYALTY_BPS;
-
-        return (salePrice * royaltyBps) / BASIS;
+        return Math.mulDiv(salePrice, profit * MAX_ROYALTY_BPS, lastPrice * BASIS);
     }
 }
