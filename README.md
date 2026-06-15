@@ -1,251 +1,235 @@
 # Sam Spratt Marketplace
- 
-A bespoke marketplace for trading ERC-721 tokens from Sam Spratt's collections. Supports listings, token bids, collection bids, and trait-based bids — all with escrowed ETH and enforced on-chain royalties.
- 
+
+A bespoke ETH marketplace for trading ERC-721 tokens from Sam Spratt collections. The system supports fixed-price listings, token bids, collection bids, trait-based bids, escrowed ETH offers, sanctions checks, token-level allowlisting for shared contracts, and enforced on-chain royalties through an external royalty model.
+
+![Contract architecture](./public/contract-architecture.png)
+
+## Contracts
+
+- `LuciMarket` in `src/LuciMarket.sol` handles listings, bid escrow, settlement, collection/token allowlists, trait data, pausing, and sanctions checks.
+- `LuciRoyaltyModel` in `src/LuciRoyaltyModel.sol` calculates royalties from configured mint prices and holds the royalty recipient.
+- `ISanctionsList` in `src/interfaces/ISanctionsList.sol` is the Chainalysis-compatible sanctions interface used by the marketplace.
+
+Both main contracts use `Ownable2Step`. The marketplace owner and royalty model owner may be the same address, but they are separate ownership domains.
+
 ## Listings
- 
-Token owners can list their tokens for sale at a fixed price. Listings are time-gated with a maximum duration of 180 days and do not escrow the NFT — the token remains in the seller's wallet until purchased.
+
+Token owners can list NFTs for a fixed ETH price. Listings are time-gated with a maximum duration of 180 days and do not escrow the NFT. The token remains in the seller's wallet until purchased.
 
 Listings can be public or private. A public listing sets `buyer` to `address(0)` and can be purchased by anyone. A private listing sets `buyer` to a specific address, and only that address can call `buy`.
- 
-Listings can be extended individually or in batch while the marketplace is unpaused and the collection is allowed. Listings can be delisted at any time, including when the marketplace is paused.
- 
-If a listed token is transferred outside the marketplace, the listing becomes stale. The new owner can override it by creating a new listing. The `buy` function verifies the seller still owns the token at execution time.
- 
+
+Listings can be extended in batch while the marketplace is unpaused and the collection or token remains allowed. Listings can be delisted while the marketplace is paused, but delisting is still subject to the sanctions check.
+
+If a listed token is transferred outside the marketplace, the listing becomes stale. The `buy` function verifies that the stored seller still owns the token at execution time. A stale listing can become executable again if the original seller reacquires the token before expiry and still has marketplace approval, so frontends and indexers should filter stale listings.
+
 ## Offers
- 
-There are three types of offers, each escrowing ETH on placement:
- 
-- **Token Bid** — a bid on a specific token in a collection.
-- **Collection Bid** — a standing bid for any token in a collection.
-- **Trait Bid** — a bid for any token matching a set of trait criteria.
- 
-A bidder can hold one active bid per type per collection (and per token/traitKey as applicable). Bids can be increased or extended while the marketplace is unpaused and the collection is allowed. Cancellation is always permitted, even when the marketplace is paused or the collection has been removed, and returns escrowed ETH.
- 
-When a seller accepts a bid, they pass a `minAmount` parameter to protect against frontrunning (e.g., a bidder reducing their bid between the seller's transaction submission and execution).
- 
-## Dynamic Royalties
- 
-Royalties are calculated dynamically based on profit relative to the last recorded marketplace sale. The marketplace records the buyer, sale price, and timestamp for each successful marketplace sale.
 
-![royalty model](./public/royalty.png)
- 
-| Scenario | Royalty |
-|---|---|
-| No prior sale recorded, or seller ≠ last buyer | 10% of sale price |
-| Sale at or below last price (breakeven/loss) | 0% |
-| Sale before the collection hold period has elapsed | 10% of sale price |
-| Sale between 1× and 2× last price after the hold period | Linear scale from 0% to 10% applied to sale price |
-| Sale at 2× or more last price | 10% of sale price |
- 
-This incentivizes trading through the marketplace by rewarding repeat participants with reduced royalties when profits are modest.
+There are three bid types. Each bid escrows ETH when placed:
 
-### Holding Period
+- **Token bid**: a bid on a specific token.
+- **Collection bid**: a standing bid for any token in an allowed collection.
+- **Trait bid**: a standing bid for any token in an allowed collection that matches a trait key.
 
-Each collection has a minimum hold period for scaled royalties. When a collection is added, its hold period defaults to 30 days. The owner can update this per collection, capped at 180 days.
+A bidder can hold one active bid per type per collection, token, or trait key as applicable. Bids can be increased or extended while the marketplace is unpaused and the relevant collection or token is allowed. Bid acceptance includes a `minAmount` parameter to protect the seller from a bidder reducing or canceling a bid before the seller's transaction executes.
 
-If the seller is the last recorded marketplace buyer but has not held the token for the collection's configured hold period, any profitable resale pays the full 10% royalty. Once the hold period has elapsed, profitable resales below 2x the last marketplace price use the sliding scale.
+Bid cancellation is available while the marketplace is paused and does not require the collection to remain allowed. Cancellation is blocked while the bidder is sanctioned; once the bidder is no longer sanctioned, the bidder can cancel and withdraw escrowed ETH.
 
-### Sliding Scale Formula
+## Collection And Token Allowlisting
 
-For profitable resales after the hold period where `salePrice < lastPrice * 2`, royalties are calculated with full-precision `Math.mulDiv`:
+The marketplace supports two allowlist modes:
+
+- **Allowed collections**: full collection support. Tokens in an allowed collection can be listed, bought, bid on with token bids, bid on with collection bids, and bid on with trait bids.
+- **Allowed tokens**: token-level support for shared contracts. An individually allowed token can be listed, bought, and bid on with token bids, but it is not eligible for collection bids or trait bids.
+
+Removing a collection or token blocks new orders, extensions, and fulfillment for that collection or token, but it does not delete existing listings or escrowed bids. Users can still delist or cancel, subject to sanctions checks. If a collection or token is later allowed again, unexpired orders can become executable again unless users have removed them.
+
+## Royalty Model
+
+Royalties are calculated by `LuciRoyaltyModel` from a configured mint price. The marketplace calls:
 
 ```solidity
-royalty = Math.mulDiv(salePrice, profit * MAX_ROYALTY_BPS, lastPrice * BASIS);
+calculateRoyalty(collection, tokenId, salePrice)
 ```
 
-where `profit = salePrice - lastPrice`, `MAX_ROYALTY_BPS = 1000`, and `BASIS = 10_000`.
+The royalty model returns the royalty recipient and the royalty amount. The marketplace pays royalties before paying seller proceeds.
 
-This preserves simple accounting around the latest marketplace buyer and sale price while charging full royalties during short holding windows and on 2x-or-greater resales.
+### Configuration
 
-### Royalty Tradeoffs
+The royalty model owner can:
 
-The marketplace intentionally uses the latest marketplace sale as the token's cost basis. This keeps royalty accounting simple and fully on-chain, but it cannot distinguish an arm's-length purchase from a sale between related wallets. The collection hold period is the primary mitigation: if the last marketplace buyer resells before the configured hold period elapses, the resale pays the full 10% royalty.
+- Set the royalty recipient.
+- Configure a collection mint price.
+- Override the mint price for a specific token.
 
-After the hold period has elapsed, the latest marketplace buyer qualifies for scaled royalties according to the normal formula. This is an accepted tradeoff of the dynamic royalty model rather than a condition the contract attempts to classify on-chain.
+Token overrides take precedence over collection configuration. A zero address royalty recipient is rejected in both the constructor and setter.
+
+### Formula
+
+Constants:
+
+```solidity
+BASIS = 10_000
+MAX_ROYALTY_BPS = 1_000 // 10%
+```
+
+The effective mint price is:
+
+1. `tokenOverrides[collection][tokenId].mintPrice` when the token override is enabled.
+2. Otherwise `collections[collection].mintPrice`.
+3. Otherwise `0`.
+
+Royalty behavior:
+
+| Scenario | Royalty |
+| --- | --- |
+| `salePrice <= mintPrice` | 0 |
+| `salePrice >= mintPrice * 2` | 10% of sale price |
+| `mintPrice < salePrice < mintPrice * 2` | Sliding scale from 0% to 10% |
+| Unconfigured collection/token and positive sale price | 10% of sale price |
+
+For the sliding-scale range:
+
+```solidity
+profit = salePrice - mintPrice;
+royalty = Math.mulDiv(salePrice, profit * MAX_ROYALTY_BPS, mintPrice * BASIS);
+```
+
+Unconfigured collections intentionally default to `mintPrice == 0`, which charges full royalties for any positive sale price. The marketplace owner controls which collections and tokens can trade, so royalty readiness is an operational allowlist decision.
 
 ## Trait Bidding System
 
-The trait bidding system allows bidders to place offers on tokens matching specific trait combinations. It uses a compact, gas-efficient encoding that fits entirely within native EVM word sizes — a `uint32` for token traits and a `uint256` for trait bid keys — enabling single-SLOAD lookups and pure bitwise matching with no loops over dynamic arrays, no hashing, and no calldata overhead.
+The trait bidding system allows bidders to place offers on tokens matching specific trait combinations. It uses a compact `uint32` for token traits and a `uint256` for trait bid keys.
 
 ### Token Trait Encoding (`uint32`)
 
-Each token's traits are stored as a single `uint32` value, divided into four 8-bit segments:
+Each token's traits are stored as four 8-bit slots:
 
-```
-┌─────────────────┬─────────────────┬─────────────────┬─────────────────┐
-│ Trait 3 [31:24] │ Trait 2 [23:16] │  Trait 1 [15:8] │  Trait 0 [7:0]  │
-└─────────────────┴─────────────────┴─────────────────┴─────────────────┘
+```text
+[ Trait 3 ][ Trait 2 ][ Trait 1 ][ Trait 0 ]
 ```
 
-Each 8-bit segment is structured as:
+Each 8-bit slot is:
 
-```
-┌───┬───┬─────────────────────────┐
-│ 7 │ 6 │   5   4   3   2   1   0 │
-├───┼───┼─────────────────────────┤
-│ I │ — │      Value (0–63)       │
-└───┴───┴─────────────────────────┘
+```text
+bit 7      initialized flag
+bit 6      reserved
+bits 5-0   value index, 0-63
 ```
 
-| Bit(s) | Name        | Description                                                                                  |
-|--------|-------------|----------------------------------------------------------------------------------------------|
-| 7      | Initialized | `1` = this trait slot is active for the token. `0` = uninitialized.                          |
-| 6      | Reserved    | Unused. Should be `0`.                                                                       |
-| 5–0    | Value       | The trait value index (0–63). Used to look up the corresponding bit in the trait key bitmap. |
+A trait slot with bit 7 unset cannot satisfy a trait bid. This prevents tokens with partially configured traits from matching bids that reference unconfigured slots.
 
-A trait slot with bit 7 unset cannot be used to satisfy a trait bid. This prevents tokens with partially configured traits from matching bids that reference unconfigured slots.
+Example:
 
-#### Example
+- Trait 0 = value `5`, initialized: `0x85`
+- Trait 1 = value `12`, initialized: `0x8C`
+- Trait 2 = unused: `0x00`
+- Trait 3 = unused: `0x00`
 
-A token with:
-- Trait 0 = value `5`, initialized → `0b10000101` = `0x85`
-- Trait 1 = value `12`, initialized → `0b10001100` = `0x8C`
-- Trait 2 = not used → `0x00`
-- Trait 3 = not used → `0x00`
-
-Encoded as: `0x00008C85`
+Encoded token traits: `0x00008C85`
 
 ### Trait Key Encoding (`uint256`)
 
-A trait key encodes the bidder's desired trait criteria as four 64-bit bitmaps packed into a single `uint256`:
+A trait key is four packed 64-bit bitmaps:
 
-```
-┌──────────────────────┬──────────────────────┬──────────────────────┬──────────────────────┐
-│ Trait 3 Bitmap       │ Trait 2 Bitmap       │ Trait 1 Bitmap       │ Trait 0 Bitmap       │
-│ [255:192]            │ [191:128]            │ [127:64]             │ [63:0]               │
-└──────────────────────┴──────────────────────┴──────────────────────┴──────────────────────┘
+```text
+[ Trait 3 bitmap ][ Trait 2 bitmap ][ Trait 1 bitmap ][ Trait 0 bitmap ]
 ```
 
-Each 64-bit bitmap represents the acceptable values for that trait slot. Bit `N` being set means value `N` is acceptable.
+Each bitmap represents acceptable values for that trait slot. Bit `N` means value `N` is acceptable.
 
-#### Matching Semantics
+Matching semantics:
 
-- **Within a single bitmap (OR):** The bidder accepts *any* of the set values for that trait. If bits 3 and 7 are set, the bidder wants tokens with trait value 3 **or** 7.
-- **Across bitmaps (AND):** All non-zero bitmaps must match. If bitmaps for trait 0 and trait 1 are non-zero, the token must satisfy *both*.
-- **Wildcard (zero bitmap):** A bitmap of `0` means "don't care" — that trait slot is ignored during matching.
+- Within a bitmap, values are ORed.
+- Across non-zero bitmaps, slots are ANDed.
+- A zero bitmap is a wildcard for that slot.
 
-#### Example
+A trait key of `0` is rejected because it is equivalent to a collection bid.
 
-A bidder wants tokens where:
-- Trait 0 is value 2 or value 5
-- Trait 1 is value 12
-- Trait 2 and 3 are wildcards (any value accepted)
+### Collection Trait Configuration
 
-```
-Trait 0 bitmap: bit 2 and bit 5 set   → 0x0000000000000024  (binary: ...00100100)
-Trait 1 bitmap: bit 12 set            → 0x0000000000001000  (binary: ...1000000000000)
-Trait 2 bitmap: wildcard               → 0x0000000000000000
-Trait 3 bitmap: wildcard               → 0x0000000000000000
-```
+Each collection has a `uint32` trait configuration that mirrors the token trait layout. Only bit 7 of each 8-bit segment matters. If bit 7 is set, that trait slot is enabled for the collection.
 
-Encoded trait key:
-```
-0x0000000000000000_0000000000000000_0000000000001000_0000000000000024
-```
+When placing, increasing, or accepting a trait bid, the marketplace validates that the trait key does not specify non-zero bitmaps for disabled trait slots. Updating a collection's trait configuration can therefore make existing trait bids unfillable until the bidder cancels or the configuration changes again.
 
-### Collection Trait Configuration (`uint32`)
+## Sanctions Checks
 
-Each collection has a trait configuration that mirrors the token trait layout. It defines which of the four trait slots are active for that collection.
+The marketplace can be configured with a Chainalysis-compatible sanctions list. If `sanctionsList` is `address(0)`, sanctions checks are disabled.
 
-```
-┌─────────────────┬─────────────────┬─────────────────┬─────────────────┐
-│  Slot 3 [31:24] │  Slot 2 [23:16] │   Slot 1 [15:8] │   Slot 0 [7:0]  │
-└─────────────────┴─────────────────┴─────────────────┴─────────────────┘
-```
+When a sanctions list is configured:
 
-Only bit 7 of each segment matters — if set, that trait slot is enabled for the collection. The remaining bits are reserved.
+- Sanctioned users cannot list, extend listings, delist, buy, place bids, increase bids, extend bids, cancel bids, or accept bids.
+- Buyers are checked in `buy`.
+- Listing sellers are checked in `buy`.
+- Sellers and bidders are checked when bids are accepted.
+- Bid escrow remains in the contract while a bidder is sanctioned. The bidder can cancel and withdraw only after removal from the sanctions list.
 
-### Validation
+The marketplace owner can update the sanctions list address.
 
-When placing or increasing a trait bid, the contract validates that the trait key does not specify non-zero bitmaps for disabled trait slots. This prevents bidders from locking additional ETH into bids that cannot be filled under the current collection configuration.
+## Pause Behavior
 
-When accepting a trait bid, the contract revalidates the trait key against the current collection configuration before checking token traits. Updating a collection's trait configuration can therefore block fills for existing trait bids that target now-disabled trait slots. Those bids are not automatically deleted; bidders can still cancel them and recover escrowed ETH.
+When paused:
 
-A trait key of `0` (all wildcards) is also rejected, as it would match every token and is functionally equivalent to a collection bid.
+- New listings, listing extensions, purchases, bid placements, bid increases, bid extensions, and bid acceptances are blocked.
+- Delisting remains available, subject to sanctions checks.
+- Bid cancellation remains available, subject to sanctions checks.
 
-### Matching Algorithm
-
-When a seller accepts a trait bid, the contract first confirms the collection is still allowed and the trait key is still valid for the current collection configuration. It then runs the following matching check:
-
-```
-For each trait slot (0–3):
-  1. Extract the 64-bit bitmap from the trait key
-  2. If the bitmap is 0, skip (wildcard)
-  3. Extract the 8-bit trait from the token's trait data
-  4. If bit 7 (initialized) is not set, revert — the trait is not configured
-  5. Extract the value index from bits 0–5
-  6. Check if the bitmap has bit `value_index` set
-  7. If not, the token does not match
-
-If all non-wildcard bitmaps pass, the token matches the bid.
-```
-
-This is implemented as a tight loop of bitwise operations with no external calls, no storage reads beyond the initial token trait SLOAD, and no dynamic memory allocation.
-
-### Gas Characteristics
-
-| Operation           | Key Cost Driver                          |
-|---------------------|------------------------------------------|
-| Place trait bid     | Collection allowlist/config reads + 1 SSTORE (bid) |
-| Increase trait bid  | Collection allowlist/config reads + bid update |
-| Accept trait bid    | Collection allowlist/config reads + 1 SLOAD (bid) + 1 SLOAD (token traits) + bitwise matching |
-| Trait matching      | Pure computation — no external calls |
-
-The matching function is `O(1)` with a fixed 4-iteration loop over constant-size data, making gas costs predictable regardless of how many trait values or combinations are specified in the bid.
+Pausing does not delete orders or refund escrow automatically.
 
 ## Access Control
- 
-The marketplace owner (via `Ownable2Step`) manages:
- 
-- **Collection whitelist** — only approved collections can list, buy, place bids, increase bids, extend orders, or accept bids. Removing a collection does not delete existing listings or bids, but it blocks their fulfillment and extension until the collection is allowed again. Delisting and bid cancellation remain available.
-- **Collection hold period** — setting the minimum time a last marketplace buyer must hold a token before qualifying for scaled royalties. New collections default to 30 days and can be configured up to 180 days.
-- **Trait configuration** — setting which trait slots are active for trait bids in a collection. Trait keys are validated when placing, increasing, and accepting trait bids, so disabling a trait slot blocks fills for existing bids using that slot.
-- **Token traits** — batch-setting trait data for tokens. This is a privileged function with no on-chain validation of trait values against the collection config; the owner is trusted to provide correctly encoded data.
-- **Royalty recipient** — the address receiving royalty payments.
-- **Pause state** — when paused, only delisting and bid cancellation are permitted.
+
+The marketplace owner manages:
+
+- Collection allowlist.
+- Token allowlist for shared contracts.
+- Trait configuration.
+- Token trait data.
+- Pause state.
+- Royalty model address.
+- Sanctions list address.
+
+The royalty model owner manages:
+
+- Royalty recipient.
+- Collection mint price configuration.
+- Token mint price overrides.
+
+Owner-managed trait data is trusted. The marketplace does not derive traits from token metadata or validate trait values beyond the compact encoding rules used for matching.
 
 ## Known Limitations
- 
-- **4 trait categories, 64 values each** — the encoding is fixed at four trait slots with 6 bits of value space per slot. Collections requiring more granularity would need a contract upgrade.
-- **One bid per type per bidder** — a bidder can only hold one collection bid, one trait bid per traitKey, and one token bid per tokenId per collection. To bid on multiple trait combinations, a bidder places separate bids with different traitKeys.
-- **Centralized trait management** — trait data is set by the contract owner, not derived from on-chain metadata or token URIs. Trait accuracy depends on the owner correctly encoding and updating values.
-- **ETH only** — the marketplace does not support ERC-20 tokens for payments or bids.
-- **No partial fills** — bids are all-or-nothing. A bid is fully consumed when accepted.
- 
+
+- **Non-escrowed listings**: listed NFTs remain in seller wallets.
+- **Stale listings**: listings are not automatically invalidated when NFTs transfer outside the marketplace.
+- **ETH only**: ERC-20 payments are not supported.
+- **No partial fills**: each accepted bid is consumed in full.
+- **One active bid per key**: bidders can hold one collection bid per collection, one token bid per token, and one trait bid per trait key.
+- **Four trait slots**: trait matching supports four slots with 64 possible values each.
+- **Indexed reads required**: active offers are spread across bidder-keyed mappings and are not enumerable on-chain.
+
 ## Known Tradeoffs
 
-- **Latest-sale royalty basis** — dynamic royalties use the latest marketplace buyer, sale price, and timestamp as the on-chain cost basis. The contract charges full royalties during the configured hold period, then allows scaled royalties after that period without trying to infer whether wallets are related.
-- **User-managed stale orders** — the contract does not automatically cancel listings or bids when external conditions change, including token transfers, trait configuration changes, collection removal, or later collection re-approval. Sellers can delist, bidders can cancel, and fulfillment paths re-check current ownership, approvals, collection allowlist status, trait validity, expiration, and payment amounts at execution time.
-- **Re-approved collections can reactivate orders** — removing a collection blocks fulfillment and extension, but it does not delete existing listings or escrowed bids because doing so would require canceling user orders or refunding bidder escrow on their behalf. If the collection is later allowed again, unexpired orders can become executable again unless users have canceled or delisted them.
- 
+- **Full royalty fallback**: unconfigured royalty entries default to full royalties for positive sale prices instead of reverting.
+- **User-managed stale orders**: users, frontends, and indexers are expected to manage stale listings and stale bids. Fulfillment paths re-check ownership, approval, allowlist status, trait validity, expiration, sanctions status, and payment amount.
+- **Re-approved orders can reactivate**: removing a collection or token blocks fulfillment while removed, but existing unexpired orders can become executable again if allowlisted later.
+- **Fixed-gas ETH transfers**: ETH payouts use `call` with `100_000` gas. This supports normal EOAs and many smart wallets while bounding recipient execution, but recipients requiring more gas can cause their own payout path to revert.
+- **Allowed collection trust**: settlement uses `safeTransferFrom` and assumes allowed ERC-721 collections behave correctly.
+
 ## Security Considerations
- 
-- **Reentrancy** — the contract uses `ReentrancyGuardTransient` (transient storage-based) to prevent reentrancy across all external functions. All state mutations occur before external calls (checks-effects-interactions pattern).
-- **`safeTransferFrom` callback** — NFT transfers use `safeTransferFrom`, which invokes `onERC721Received` on the buyer if the buyer is a contract. This is a potential reentry vector, but is mitigated by the transient reentrancy guard and the fact that all state changes (bid deletion, listing clearing, sale recording) complete before the transfer.
-- **ETH forwarding** — ETH transfers use low-level `call` with all available gas. This allows recipients to be contracts (e.g., multisigs, smart wallets) but means a malicious royalty recipient or seller could consume gas. The reentrancy guard prevents state manipulation.
-- **Stale listings** — listings are not invalidated on-chain when a token is transferred. The `buy` function checks ownership at execution time, but the listing remains in storage and can become executable again if the original seller reacquires the token before expiry. Frontends and indexers should filter stale listings.
-- **Allowlist removal** — removing a collection blocks fulfillment and extension of existing orders but does not delete them. This preserves user custody over listings and bid escrow, and means re-allowing a collection can make unexpired orders executable again.
-- **Owner trust assumptions** — the owner can set arbitrary trait data, configure collection hold periods, pause the marketplace, and change the royalty recipient. Users trust the owner to act honestly. `Ownable2Step` mitigates accidental ownership transfers.
- 
+
+- **Reentrancy**: external state-changing functions use `ReentrancyGuardTransient`. State changes happen before external calls.
+- **ERC-721 receiver callbacks**: NFT transfers use `safeTransferFrom`, which may call `onERC721Received` on contract buyers. The reentrancy guard protects marketplace entry points during that callback.
+- **ETH payouts**: failed ETH sends revert settlement or cancellation. Contract sellers, bidders, or royalty recipients should be able to receive ETH within the gas cap.
+- **Sanctioned escrow**: sanctioned bidders cannot withdraw bid escrow until no longer sanctioned.
+- **Owner trust**: owners can pause trading, change allowlists, set traits, change the royalty model, change sanctions enforcement, and configure royalties.
+
 ## Indexing Considerations
- 
-The indexing infrastructure is best served by a REST API that enriches on-chain event data into a queryable data model. Key responsibilities:
- 
-- **Listing invalidation on transfer** — when a token is transferred outside the marketplace, mark the listing as invalidated unless the token is transferred back to the original seller and the listing has not expired.
-- **Offer aggregation** — aggregate all active bids (token, collection, and trait) for a given token or collection into a single queryable view.
-- **Trait resolution** — map on-chain trait indices to human-readable trait names and values for frontend display.
- 
-A subgraph is insufficient for this — the transfer-aware invalidation logic and enriched data views require a traditional backend.
- 
-## Frontend Considerations
- 
-### Token Pages
- 
-Read listing data directly from the blockchain using Multicall3 to batch-query the listing state and current token owner in a single RPC call. If the listing seller does not match the current owner, hide the listing.
- 
-Use the backend indexer for offer data. On-chain bid data is spread across three separate mappings keyed by bidder address, making it impractical to enumerate all bids for a given token without indexed events.
- 
-### Collection Pages
- 
-Use the indexer for both listings and collection-level offers. The on-chain data structure is optimized for write-path efficiency (accepting/canceling specific bids), not for read-path enumeration across all bidders.
+
+The indexing layer should enrich on-chain events into a queryable model. Key responsibilities:
+
+- Track listing state and current token ownership.
+- Hide listings where the stored seller no longer owns the token.
+- Optionally mark stale listings as active again if the original seller reacquires the token before expiry.
+- Aggregate token, collection, and trait bids for token and collection pages.
+- Resolve compact trait indices into human-readable trait names and values.
+- Track sanctions and allowlist changes that affect order executability.
+
+On-chain bid data is keyed by bidder address, so event indexing is required for practical offer discovery.

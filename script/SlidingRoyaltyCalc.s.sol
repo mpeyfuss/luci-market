@@ -9,20 +9,20 @@ contract SlidingRoyaltyCalc is Script {
     uint256 public constant BASIS = 10_000;
     uint256 public constant MAX_ROYALTY_BPS = 1000;
 
-    function run(uint256 salePrice, uint256 lastPrice) public pure {
+    function run(uint256 salePrice, uint256 mintPrce) public pure {
         // calculate with intermediate variable
-        uint256 profit = salePrice - lastPrice;
-        uint256 royaltyBps = (profit * MAX_ROYALTY_BPS) / lastPrice; // truncates to 0 when profit is < 0.1% of last price
+        uint256 profit = salePrice - mintPrce;
+        uint256 royaltyBps = (profit * MAX_ROYALTY_BPS) / mintPrce; // truncates to 0 when profit is < 0.1% of last price
         console.log(royaltyBps);
         uint256 royalty = salePrice * royaltyBps / BASIS;
         console.log(royalty);
 
         // calculate without intermediary variable
-        royalty = (salePrice * profit * MAX_ROYALTY_BPS) / (lastPrice * BASIS);
+        royalty = (salePrice * profit * MAX_ROYALTY_BPS) / (mintPrce * BASIS);
         console.log(royalty);
 
         // calculate with mulDiv
-        royalty = Math.mulDiv(salePrice, profit * MAX_ROYALTY_BPS, lastPrice * BASIS);
+        royalty = Math.mulDiv(salePrice, profit * MAX_ROYALTY_BPS, mintPrce * BASIS);
         console.log(royalty);
 
         // THIS SHOULD SHOW THAT WASH TRADING CAN ONLY HAPPEN AT A PROFIT OF 9 WEI OR LOWER
