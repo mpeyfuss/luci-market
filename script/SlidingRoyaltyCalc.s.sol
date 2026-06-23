@@ -5,7 +5,6 @@ import "forge-std-1.14.0/Script.sol";
 import {Math} from "@openzeppelin-contracts-5.6.1/utils/math/Math.sol";
 
 contract SlidingRoyaltyCalc is Script {
-
     uint256 public constant BASIS = 10_000;
     uint256 public constant MAX_ROYALTY_BPS = 1000;
 

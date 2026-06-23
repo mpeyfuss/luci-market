@@ -8,13 +8,12 @@ import {LuciRoyaltyModel} from "./LuciRoyaltyModel.sol";
 import {ISanctionsList} from "./interfaces/ISanctionsList.sol";
 
 /// @title Luci Market
-/// @notice A marketplace for buying and selling allowlisted ERC721 tokens
+/// @notice A simple, onchain marketplace for buying and selling allowlisted ERC721 tokens
 /// @dev Supports listings, collection bids, token bids, and trait bids
 /// @author mpeyfuss
 /// @author rhynotic
 /// @author Sam Spratt
 contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
-
     /////////////////////////////////////////////////////////////////////
     // TYPES
     /////////////////////////////////////////////////////////////////////
@@ -53,7 +52,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
     // STORAGE
     /////////////////////////////////////////////////////////////////////
 
-    /// @notice Maximum listing duration to avoid stale listings
+    /// @notice Maximum listing duration to help avoid the stale listing attack vector
     uint256 public constant MAX_LISTING_DURATION = 180 days;
 
     /// @notice Whether the marketplace is paused
@@ -222,7 +221,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         if (initRoyaltyModel == address(0)) revert ZeroAddress();
         royaltyModel = initRoyaltyModel;
         sanctionsList = initSanctionsList;
-    }    
+    }
 
     /////////////////////////////////////////////////////////////////////
     // LISTING FUNCTIONS
@@ -255,6 +254,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
 
     /// @notice Extend listing(s)
     /// @dev Compatible with batch operations for UX benefits and allows extended expired listings
+    /// @dev Extends all token listings to `expiresAt` for simplicity
     function extendListings(Token[] calldata tokens, uint64 expiresAt) external nonReentrant whenNotPaused {
         // checks
         _checkSanctionsList(msg.sender);
@@ -269,7 +269,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
             Token memory token = tokens[i];
             _checkCollectionOrTokenAllowed(token.collection, token.tokenId);
             Listing storage listing = listings[token.collection][token.tokenId];
-            if (listing.seller != msg.sender) revert NotListingOwner();
+            if (listing.seller != msg.sender) revert NotListingOwner(); // this is triggered if the token isn't listed
 
             listing.expiresAt = expiresAt;
 
@@ -278,7 +278,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
     }
 
     /// @notice Remove listing(s)
-    /// @dev Compatible with batch operations for UX benefits. Always allowed, even when paused.
+    /// @dev Compatible with batch operations for UX benefits. Always allowed, even when paused (except if sanctioned).
     function delist(Token[] calldata tokens) external nonReentrant {
         // checks
         _checkSanctionsList(msg.sender);
@@ -320,6 +320,9 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
     /////////////////////////////////////////////////////////////////////
 
     /// @notice Place a bid on a specific token
+    /// @param collection The collection address
+    /// @param tokenId The token id
+    /// @param expiresAt Expiry timestamp (0 = no expiry)
     function placeTokenBid(address collection, uint256 tokenId, uint64 expiresAt)
         external
         payable
@@ -330,7 +333,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         _checkSanctionsList(msg.sender);
         _checkCollectionOrTokenAllowed(collection, tokenId);
         if (msg.value == 0) revert InvalidPrice();
-        if (tokenBids[msg.sender][collection][tokenId].amount > 0) revert BidAlreadyExists();
+        if (tokenBids[msg.sender][collection][tokenId].amount > 0) revert BidAlreadyExists(); // should increase bid instead
         if (expiresAt != 0 && expiresAt < block.timestamp) revert BidExpired();
 
         // effects
@@ -348,7 +351,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         if (msg.value == 0) revert InvalidPrice();
 
         Bid storage bid = tokenBids[msg.sender][collection][tokenId];
-        if (bid.amount == 0) revert NoBidExists();
+        if (bid.amount == 0) revert NoBidExists(); // create bid instead
         _checkBidNotExpired(bid.expiresAt);
 
         // effects
@@ -380,7 +383,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
 
         // effects
         delete tokenBids[bidder][collection][tokenId];
-        _clearListing(collection, tokenId);
+        _clearListing(collection, tokenId); // avoids stale listing attack
 
         // interactions
         uint256 royalty = _settleSale(nft, collection, tokenId, msg.sender, bidder, bid.amount);
@@ -393,12 +396,14 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
     /////////////////////////////////////////////////////////////////////
 
     /// @notice Place a standing bid for any NFT in a collection
+    /// @param collection The collection address
+    /// @param expiresAt Expiry timestamp (0 = no expiry)
     function placeCollectionBid(address collection, uint64 expiresAt) external payable nonReentrant whenNotPaused {
         // checks
         _checkSanctionsList(msg.sender);
         _checkCollectionAllowed(collection);
         if (msg.value == 0) revert InvalidPrice();
-        if (collectionBids[msg.sender][collection].amount > 0) revert BidAlreadyExists();
+        if (collectionBids[msg.sender][collection].amount > 0) revert BidAlreadyExists(); // increase bid instead
         if (expiresAt != 0 && expiresAt < block.timestamp) revert BidExpired();
 
         // effects
@@ -416,7 +421,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         if (msg.value == 0) revert InvalidPrice();
 
         Bid storage bid = collectionBids[msg.sender][collection];
-        if (bid.amount == 0) revert NoBidExists();
+        if (bid.amount == 0) revert NoBidExists(); // create bid instead
         _checkBidNotExpired(bid.expiresAt);
 
         // effects
@@ -448,7 +453,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
 
         // effects
         delete collectionBids[bidder][collection];
-        _clearListing(collection, tokenId);
+        _clearListing(collection, tokenId); // avoids stale listing attack
 
         // interactions
         uint256 royalty = _settleSale(nft, collection, tokenId, msg.sender, bidder, bid.amount);
@@ -476,7 +481,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         if (msg.value == 0) revert InvalidPrice();
         if (expiresAt != 0 && expiresAt < block.timestamp) revert BidExpired();
         if (!_validateTraitKey(traitKey, collectionTraitConfigs[collection])) revert InvalidTraitKey();
-        if (traitBids[msg.sender][collection][traitKey].amount > 0) revert BidAlreadyExists();
+        if (traitBids[msg.sender][collection][traitKey].amount > 0) revert BidAlreadyExists(); // increase bid instead
 
         // effects
         traitBids[msg.sender][collection][traitKey] = Bid({amount: uint192(msg.value), expiresAt: expiresAt});
@@ -494,7 +499,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         if (msg.value == 0) revert InvalidPrice();
 
         Bid storage bid = traitBids[msg.sender][collection][traitKey];
-        if (bid.amount == 0) revert NoBidExists();
+        if (bid.amount == 0) revert NoBidExists(); // create bid instead
         _checkBidNotExpired(bid.expiresAt);
 
         // effects
@@ -529,7 +534,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
 
         // effects
         delete traitBids[bidder][collection][traitKey];
-        _clearListing(collection, tokenId);
+        _clearListing(collection, tokenId); // avoids stale listing attack
 
         // interactions
         uint256 royalty = _settleSale(nft, collection, tokenId, msg.sender, bidder, bid.amount);
@@ -543,6 +548,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
 
     /// @notice Extend bid(s)
     /// @dev Allows extending expired bids rather than canceling and re-bidding
+    /// @dev All bids share the same `expiresAt` for simplicity
     function extendBids(BidSelector[] calldata bidSelectors, uint64 expiresAt) external nonReentrant whenNotPaused {
         // checks
         _checkSanctionsList(msg.sender);
@@ -579,7 +585,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
     }
 
     /// @notice Cancels bid(s)
-    /// @dev Compatible with batch cancellation for UX ease. Always possible to cancel, even when paused.
+    /// @dev Compatible with batch cancellation for UX ease. Always possible to cancel, even when paused (except if sanctioned).
     function cancelBids(BidSelector[] calldata bidSelectors) external nonReentrant {
         // checks
         _checkSanctionsList(msg.sender);
@@ -658,6 +664,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
     }
 
     /// @notice Set a collection trait config (which traits are allowed)
+    /// @dev Since this is a priveledged function, it's expected that only bit 7 is used to enable/disable collection traits as all other bits are ignored anyways.
     function setCollectionTraitsConfig(address collection, uint32 config) external onlyOwner {
         if (!allowedCollections[collection]) revert CollectionNotAllowed();
         collectionTraitConfigs[collection] = config;
@@ -705,7 +712,9 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
 
     /// @dev Helper for checking if a collection or token is allowed
     function _checkCollectionOrTokenAllowed(address collection, uint256 tokenId) internal view {
-        if (!allowedCollections[collection] && !allowedTokens[collection][tokenId]) revert CollectionOrTokenNotAllowed();
+        if (!allowedCollections[collection] && !allowedTokens[collection][tokenId]) {
+            revert CollectionOrTokenNotAllowed();
+        }
     }
 
     /// @dev Check if marketplace is approved to transfer the token
@@ -728,8 +737,8 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         if (traitKey == 0) return false;
         for (uint256 i = 0; i < 4; ++i) {
             uint64 bitmap = uint64(traitKey >> (i * 64));
-            bool slotEnabled = uint8(collectionTraitConfig >> (i * 8)) & 0x80 != 0;
-            if (bitmap != 0 && !slotEnabled) return false; // bidding on disabled slot
+            bool slotEnabled = uint8(collectionTraitConfig >> (i * 8)) & 0x80 != 0; // 0x80 == b10000000
+            if (bitmap != 0 && !slotEnabled) return false; // bidding on disabled slot not allowed
         }
         return true;
     }
@@ -741,7 +750,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
             if (bitmap == 0) continue; // wildcard
             uint8 trait = uint8(traits >> (i * 8));
             if (trait & 0x80 == 0) revert TraitNotSet();
-            uint8 index = trait & 0x3F; // bitwise and with b00111111 to get the bottom 6 bits only
+            uint8 index = trait & 0x3F; // bitwise AND with b00111111 to get the bottom 6 bits only
             if (bitmap >> index & 1 == 0) return false; // shift bitmap down the steps to see if that slot is set to 1, which matches the token trait
         }
         // if gets here, the token has a desired trait from each trait.
@@ -818,7 +827,8 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         uint256 salePrice
     ) internal returns (uint256) {
         // Calculate royalties
-        (address royaltyRecipient, uint256 royalty) = LuciRoyaltyModel(royaltyModel).calculateRoyalty(collection, tokenId, salePrice);
+        (address royaltyRecipient, uint256 royalty) =
+            LuciRoyaltyModel(royaltyModel).calculateRoyalty(collection, tokenId, salePrice);
         uint256 sellerProceeds = salePrice - royalty;
 
         // Transfer NFT
