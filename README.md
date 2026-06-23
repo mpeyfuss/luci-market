@@ -14,25 +14,105 @@ Both main contracts use `Ownable2Step`. The marketplace owner and royalty model 
 
 ## Listings
 
-Token owners can list NFTs for a fixed ETH price. Listings are time-gated with a maximum duration of 180 days and do not escrow the NFT. The token remains in the seller's wallet until purchased.
+Token owners can list NFTs for a fixed ETH price. Listings are time-gated with a maximum duration of 180 days and do not escrow the NFT. The token remains in the seller's wallet until purchased. Calling `list` again for the same token updates or replaces the stored listing, including stale listings left by a previous owner.
 
 Listings can be public or private. A public listing sets `buyer` to `address(0)` and can be purchased by anyone. A private listing sets `buyer` to a specific address, and only that address can call `buy`.
 
-Listings can be extended in batch while the marketplace is unpaused and the collection or token remains allowed. Listings can be delisted while the marketplace is paused, but delisting is still subject to the sanctions check.
+Listings can be extended in batch while the marketplace is unpaused and the collection or token remains allowed. Extension can revive expired listings as long as the stored seller calls it and the new expiration is valid. Listings can be delisted at any time, including while the marketplace is paused or after the collection/token has been removed from the allowlist, but delisting is still subject to the sanctions check.
 
-If a listed token is transferred outside the marketplace, the listing becomes stale. The `buy` function verifies that the stored seller still owns the token at execution time. A stale listing can become executable again if the original seller reacquires the token before expiry and still has marketplace approval, so frontends and indexers should filter stale listings.
+If a listed token is transferred outside the marketplace, the listing becomes stale. The `buy` function verifies that the stored seller still owns the token at execution time and relies on the ERC-721 approval check inside `safeTransferFrom`. A stale or approval-blocked listing can become executable again if the original seller reacquires or re-approves the token before expiry, so frontends and indexers should filter stale listings.
 
 ## Offers
 
-There are three bid types. Each bid escrows ETH when placed:
+There are three bid types. Each bid escrows ETH when placed and stores an amount plus an expiration timestamp. `expiresAt == 0` means no expiry; otherwise a bid is fillable through the exact expiration timestamp and expires once `block.timestamp > expiresAt`.
 
 - **Token bid**: a bid on a specific token.
 - **Collection bid**: a standing bid for any token in an allowed collection.
 - **Trait bid**: a standing bid for any token in an allowed collection that matches a trait key.
 
-A bidder can hold one active bid per type per collection, token, or trait key as applicable. Bids can be increased or extended while the marketplace is unpaused and the relevant collection or token is allowed. Bid acceptance includes a `minAmount` parameter to protect the seller from a bidder reducing or canceling a bid before the seller's transaction executes.
+A bidder can hold one stored bid per type per collection, token, or trait key as applicable. Expired bids still occupy their key until the bidder cancels them or extends them. Bids can be increased while unexpired, extended even after expiry, or canceled while expired. Increasing and extending require the marketplace to be unpaused and the relevant collection or token to be allowed.
 
-Bid cancellation is available while the marketplace is paused and does not require the collection to remain allowed. Cancellation is blocked while the bidder is sanctioned; once the bidder is no longer sanctioned, the bidder can cancel and withdraw escrowed ETH.
+Bid acceptance includes a `minAmount` parameter to protect the seller from accepting less than expected if the bid changes before the seller's transaction executes. Accepted bids are deleted, and accepting any bid for a token clears that token's existing listing to avoid leaving a stale listing behind.
+
+Bid cancellation is available while the marketplace is paused or unpaused and does not require the collection to remain allowed. Cancellation is blocked while the bidder is sanctioned; once the bidder is no longer sanctioned, the bidder can cancel and withdraw escrowed ETH.
+
+## Order Flows
+
+The diagrams below are documentation-only summaries of the contract flow. The Solidity source remains the authority.
+
+### Listing Purchase
+
+```mermaid
+flowchart TD
+    A[Seller lists token] --> B[Listing stored]
+    B --> C[Buyer calls buy with exact ETH]
+    C --> D{Marketplace unpaused and collection/token allowed?}
+    D -- No --> X[Revert]
+    D -- Yes --> E{Buyer, seller, expiry, and private buyer valid?}
+    E -- No --> X
+    E -- Yes --> F{Stored seller still owns token?}
+    F -- No --> X
+    F -- Yes --> G[Delete listing]
+    G --> H[Calculate royalty]
+    H --> I[Transfer NFT with safeTransferFrom]
+    I --> J[Pay royalty, then seller]
+    J --> K[Emit Sold]
+```
+
+### Token Bid
+
+```mermaid
+flowchart TD
+    A[Bidder places token bid with ETH] --> B[Token bid stored]
+    B --> C{Bidder action}
+    C --> D[Increase while unexpired]
+    C --> E[Extend, including after expiry]
+    C --> F[Cancel and withdraw escrow]
+    B --> G[Seller accepts token bid]
+    G --> H{Allowed, unpaused, unsanctioned, unexpired, minAmount met?}
+    H -- No --> X[Revert]
+    H -- Yes --> I{Seller owns token and approved market?}
+    I -- No --> X
+    I -- Yes --> J[Delete bid and clear listing]
+    J --> K[Transfer NFT and pay royalty/seller]
+    K --> L[Emit TokenBidAccepted]
+```
+
+### Collection Bid
+
+```mermaid
+flowchart TD
+    A[Bidder places collection bid with ETH] --> B[Collection bid stored]
+    B --> C[Seller accepts for any token in allowed collection]
+    C --> D{Collection allowed, unpaused, unsanctioned, unexpired, minAmount met?}
+    D -- No --> X[Revert]
+    D -- Yes --> E{Seller owns token and approved market?}
+    E -- No --> X
+    E -- Yes --> F[Delete bid and clear listing]
+    F --> G[Transfer NFT and pay royalty/seller]
+    G --> H[Emit CollectionBidAccepted]
+```
+
+### Trait Bid
+
+```mermaid
+flowchart TD
+    A[Owner configures enabled trait slots] --> B[Owner sets token traits]
+    B --> C[Bidder places trait bid with ETH and traitKey]
+    C --> D{traitKey nonzero and only uses enabled slots?}
+    D -- No --> X[Revert]
+    D -- Yes --> E[Trait bid stored]
+    E --> F[Seller accepts for matching token]
+    F --> G{Bid valid and trait config still allows key?}
+    G -- No --> X
+    G -- Yes --> H{Token has every required trait slot initialized?}
+    H -- No --> Y[Revert TraitNotSet]
+    H -- Yes --> I{Token trait values match key?}
+    I -- No --> Z[Revert TraitMismatch]
+    I -- Yes --> J[Delete bid and clear listing]
+    J --> K[Transfer NFT and pay royalty/seller]
+    K --> L[Emit TraitBidAccepted]
+```
 
 ## Collection And Token Allowlisting
 
@@ -61,7 +141,7 @@ The royalty model owner can:
 - Configure a collection mint price.
 - Override the mint price for a specific token.
 
-Token overrides take precedence over collection configuration. A zero address royalty recipient is rejected in both the constructor and setter.
+Token overrides take precedence over collection configuration when the token override is enabled. A zero address royalty recipient is rejected in both the constructor and setter.
 
 ### Formula
 
@@ -94,7 +174,7 @@ profit = salePrice - mintPrice;
 royalty = Math.mulDiv(salePrice, profit * MAX_ROYALTY_BPS, mintPrice * BASIS);
 ```
 
-Unconfigured collections intentionally default to `mintPrice == 0`, which charges full royalties for any positive sale price. The marketplace owner controls which collections and tokens can trade, so royalty readiness is an operational allowlist decision.
+Unconfigured collections intentionally default to `mintPrice == 0`, which charges full royalties for any positive sale price. A configured collection or enabled token override with a zero mint price has the same positive-sale behavior. The marketplace owner controls which collections and tokens can trade, so royalty readiness is an operational allowlist decision.
 
 ## Trait Bidding System
 
@@ -142,8 +222,57 @@ Matching semantics:
 - Within a bitmap, values are ORed.
 - Across non-zero bitmaps, slots are ANDed.
 - A zero bitmap is a wildcard for that slot.
+- A required token trait slot without bit 7 set reverts with `TraitNotSet`.
+- A required token trait slot with a non-matching value reverts with `TraitMismatch` when the bid is accepted.
 
 A trait key of `0` is rejected because it is equivalent to a collection bid.
+
+### Trait Matching Diagram
+
+Trait bids are easiest to read as four independent filters. Each non-zero filter must match the token's corresponding initialized trait slot.
+
+```text
+traitKey uint256
+
+| bits 255..192      | bits 191..128      | bits 127..64       | bits 63..0         |
+| Trait 3 bitmap     | Trait 2 bitmap     | Trait 1 bitmap     | Trait 0 bitmap     |
+| wildcard if zero   | wildcard if zero   | acceptable values  | acceptable values  |
+```
+
+Example bid:
+
+```text
+Trait 0 bitmap: accepts value 5 or 9   = 0x0000000000000220
+Trait 1 bitmap: accepts value 12       = 0x0000000000001000
+Trait 2 bitmap: wildcard               = 0x0000000000000000
+Trait 3 bitmap: wildcard               = 0x0000000000000000
+
+traitKey =
+| 0x0000000000000000 | 0x0000000000000000 | 0x0000000000001000 | 0x0000000000000220 |
+```
+
+Matching token:
+
+```text
+tokenTraits uint32 = 0x00008C85
+
+| Trait 3 slot | Trait 2 slot | Trait 1 slot | Trait 0 slot |
+| 0x00         | 0x00         | 0x8C         | 0x85         |
+| ignored      | ignored      | init, 12     | init, 5      |
+```
+
+Matching result:
+
+```text
+Trait 0: key requires 5 OR 9; token has initialized 5   -> match
+Trait 1: key requires 12; token has initialized 12       -> match
+Trait 2: key is zero                                    -> wildcard
+Trait 3: key is zero                                    -> wildcard
+
+Final result: match, because every non-zero bitmap matched.
+```
+
+The same bid would fail if Trait 0 were initialized to value `4`, because value `4` is not in the Trait 0 bitmap. It would revert with `TraitNotSet` if Trait 0's initialized bit were unset.
 
 ### Collection Trait Configuration
 
@@ -201,7 +330,7 @@ Owner-managed trait data is trusted. The marketplace does not derive traits from
 - **Stale listings**: listings are not automatically invalidated when NFTs transfer outside the marketplace.
 - **ETH only**: ERC-20 payments are not supported.
 - **No partial fills**: each accepted bid is consumed in full.
-- **One active bid per key**: bidders can hold one collection bid per collection, one token bid per token, and one trait bid per trait key.
+- **One stored bid per key**: bidders can hold one collection bid per collection, one token bid per token, and one trait bid per trait key. Expired bids still occupy storage until canceled or extended.
 - **Four trait slots**: trait matching supports four slots with 64 possible values each.
 - **Indexed reads required**: active offers are spread across bidder-keyed mappings and are not enumerable on-chain.
 
