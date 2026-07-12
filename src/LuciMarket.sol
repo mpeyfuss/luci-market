@@ -775,6 +775,10 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         if (royaltyAmount > salePrice) revert InvalidRoyaltyAmount();
         uint256 sellerProceeds = salePrice - royaltyAmount;
 
+        if (royaltyAmount > 0) {
+            _checkSanctionsList(royaltyRecipient);
+        }
+
         // Transfer NFT
         nft.transferFrom(seller, buyer, tokenId);
 

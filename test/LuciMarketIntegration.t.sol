@@ -82,6 +82,41 @@ contract LuciMarketIntegrationTest is LuciTestBase {
         assertEq(newRecipient.balance, 1 ether);
     }
 
+    function test_buyRevertsWhenPositiveRoyaltyRecipientIsSanctioned() public {
+        _list(TOKEN_ID, PRICE, address(0));
+        _setSanctionsList();
+        sanctions.setSanctioned(royaltyRecipient, true);
+
+        uint256 sellerBefore = seller.balance;
+        uint256 recipientBefore = royaltyRecipient.balance;
+
+        vm.expectRevert(LuciMarket.Sanctioned.selector);
+        vm.prank(buyer);
+        market.buy{value: PRICE}(address(nft), TOKEN_ID);
+
+        assertEq(nft.ownerOf(TOKEN_ID), seller);
+        assertEq(seller.balance, sellerBefore);
+        assertEq(royaltyRecipient.balance, recipientBefore);
+        assertEq(address(market).balance, 0);
+
+        (address listingSeller,,,,) = market.listings(address(nft), TOKEN_ID);
+        assertEq(listingSeller, seller);
+    }
+
+    function test_buyAllowsSanctionedRoyaltyRecipientWhenRoyaltyIsZero() public {
+        vm.prank(owner);
+        royaltyModel.configureCollection(address(nft), uint192(PRICE));
+        _list(TOKEN_ID, PRICE, address(0));
+        _setSanctionsList();
+        sanctions.setSanctioned(royaltyRecipient, true);
+
+        vm.prank(buyer);
+        market.buy{value: PRICE}(address(nft), TOKEN_ID);
+
+        assertEq(nft.ownerOf(TOKEN_ID), buyer);
+        assertEq(royaltyRecipient.balance, 0);
+    }
+
     function test_acceptBidCalculatesRoyaltyAtAcceptance() public {
         _placeTokenBid(TOKEN_ID, PRICE);
         uint256 sellerBefore = seller.balance;
@@ -118,6 +153,27 @@ contract LuciMarketIntegrationTest is LuciTestBase {
         (address listingSeller,,,,) = market.listings(address(nft), TOKEN_ID);
         assertEq(bidAmount, 0);
         assertEq(listingSeller, address(0));
+    }
+
+    function test_acceptBidRevertsWhenPositiveRoyaltyRecipientIsSanctioned() public {
+        _placeTokenBid(TOKEN_ID, PRICE);
+        _setSanctionsList();
+        sanctions.setSanctioned(royaltyRecipient, true);
+
+        uint256 sellerBefore = seller.balance;
+        uint256 recipientBefore = royaltyRecipient.balance;
+
+        vm.expectRevert(LuciMarket.Sanctioned.selector);
+        vm.prank(seller);
+        market.acceptBid(_tokenBid(TOKEN_ID), bidder, PRICE);
+
+        assertEq(nft.ownerOf(TOKEN_ID), seller);
+        assertEq(seller.balance, sellerBefore);
+        assertEq(royaltyRecipient.balance, recipientBefore);
+        assertEq(address(market).balance, PRICE);
+
+        (uint192 bidAmount,) = market.tokenBids(bidder, address(nft), TOKEN_ID);
+        assertEq(bidAmount, PRICE);
     }
 
     function test_acceptCollectionBidTransfersNftAndDeletesBid() public {

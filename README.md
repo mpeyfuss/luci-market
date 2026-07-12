@@ -134,7 +134,7 @@ Royalties are calculated by `LuciRoyaltyModel` from a configured mint price. The
 calculateRoyalty(collection, tokenId, salePrice)
 ```
 
-The royalty model returns the royalty recipient and the royalty amount. The marketplace pays royalties before paying seller proceeds. Listings snapshot the royalty amount when created but resolve the current recipient from the marketplace's current royalty model when purchased. Changing the royalty recipient or replacing the marketplace royalty model therefore changes where an existing listing's snapshotted royalty is paid without changing the seller's proceeds. Bids resolve both values when accepted.
+The royalty model returns the royalty recipient and the royalty amount. Before paying a positive royalty, the marketplace checks that the recipient is not sanctioned, then pays royalties before paying seller proceeds. Listings snapshot the royalty amount when created but resolve the current recipient from the marketplace's current royalty model when purchased. Changing the royalty recipient or replacing the marketplace royalty model therefore changes where an existing listing's snapshotted royalty is paid without changing the seller's proceeds. Bids resolve both values when accepted.
 
 ### Configuration
 
@@ -294,6 +294,7 @@ When a sanctions list is configured:
 - Buyers are checked in `buy`.
 - Listing sellers are checked in `buy`.
 - Sellers and bidders are checked when bids are accepted.
+- Royalty recipients are checked at settlement when the royalty amount is greater than zero.
 - Bid escrow remains in the contract while a bidder is sanctioned. The bidder can cancel and withdraw only after removal from the sanctions list.
 
 The marketplace owner can update the sanctions list address.
