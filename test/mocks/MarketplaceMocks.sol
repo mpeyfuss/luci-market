@@ -27,6 +27,24 @@ contract MockSanctionsList is ISanctionsList {
     }
 }
 
+contract MockRoyaltyModel {
+    address public recipient;
+    uint256 public amount;
+
+    constructor(address recipient_, uint256 amount_) {
+        recipient = recipient_;
+        amount = amount_;
+    }
+
+    function calculateRoyalty(address, uint256, uint256)
+        external
+        view
+        returns (address royaltyRecipient, uint256 royaltyAmount)
+    {
+        return (recipient, amount);
+    }
+}
+
 contract RejectEthActor {
     function approveAll(address collection, address operator) external {
         IERC721(collection).setApprovalForAll(operator, true);

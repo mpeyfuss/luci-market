@@ -14,13 +14,13 @@ Both main contracts use `Ownable2Step`. The marketplace owner and royalty model 
 
 ## Listings
 
-Token owners can list NFTs for a fixed ETH price. Listings are time-gated with a maximum duration of 180 days and do not escrow the NFT. The token remains in the seller's wallet until purchased. Calling `list` again for the same token updates or replaces the stored listing, including stale listings left by a previous owner.
+Token owners can list NFTs for a fixed ETH price. Listings are time-gated with a maximum duration of 180 days and do not escrow the NFT. The token remains in the seller's wallet until purchased. The royalty amount is calculated and stored when the listing is created, locking in the seller's proceeds even if royalty configuration changes later. Calling `list` again for the same token updates or replaces the stored listing, including stale listings left by a previous owner, and snapshots a new royalty amount.
 
 Listings can be public or private. A public listing sets `buyer` to `address(0)` and can be purchased by anyone. A private listing sets `buyer` to a specific address, and only that address can call `buy`.
 
-Listings can be extended in batch while the marketplace is unpaused and the collection or token remains allowed. Extension can revive expired listings as long as the stored seller calls it and the new expiration is valid. Listings can be delisted at any time, including while the marketplace is paused or after the collection/token has been removed from the allowlist, but delisting is still subject to the sanctions check.
+Listings can be extended in batch while the marketplace is unpaused and the collection or token remains allowed. Extension can revive expired listings as long as the stored seller calls it and the new expiration is valid, and it preserves the snapshotted royalty amount. Listings can be delisted at any time, including while the marketplace is paused, after the collection/token has been removed from the allowlist, or while the seller is sanctioned. Delisting does not transfer or release assets, so it does not perform a sanctions check.
 
-If a listed token is transferred outside the marketplace, the listing becomes stale. The `buy` function verifies that the stored seller still owns the token at execution time and relies on the ERC-721 approval check inside `safeTransferFrom`. A stale or approval-blocked listing can become executable again if the original seller reacquires or re-approves the token before expiry, so frontends and indexers should filter stale listings.
+If a listed token is transferred outside the marketplace, the listing becomes stale. The `buy` function verifies that the stored seller still owns the token at execution time and relies on the ERC-721 approval check inside `transferFrom`. A stale or approval-blocked listing can become executable again if the original seller reacquires or re-approves the token before expiry, so frontends and indexers should filter stale listings.
 
 ## Offers
 
@@ -56,7 +56,7 @@ flowchart TD
     F -- No --> X
     F -- Yes --> G[Delete listing]
     G --> H[Calculate royalty]
-    H --> I[Transfer NFT with safeTransferFrom]
+    H --> I[Transfer NFT with transferFrom]
     I --> J[Pay royalty, then seller]
     J --> K[Emit Sold]
 ```
@@ -123,7 +123,7 @@ The marketplace supports two allowlist modes:
 - **Allowed collections**: full collection support. Tokens in an allowed collection can be listed, bought, bid on with token bids, bid on with collection bids, and bid on with trait bids.
 - **Allowed tokens**: token-level support for shared contracts. An individually allowed token can be listed, bought, and bid on with token bids, but it is not eligible for collection bids or trait bids.
 
-Removing a collection or token blocks new orders, extensions, and fulfillment for that collection or token, but it does not delete existing listings or escrowed bids. Users can still delist or cancel, subject to sanctions checks. If a collection or token is later allowed again, unexpired orders can become executable again unless users have removed them.
+Removing a collection or token blocks new orders, extensions, and fulfillment for that collection or token, but it does not delete existing listings or escrowed bids. Users can still delist without a sanctions check. Bid cancellation remains subject to sanctions checks because it returns escrowed ETH. If a collection or token is later allowed again, unexpired orders can become executable again unless users have removed them.
 
 ## Royalty Model
 
@@ -133,7 +133,7 @@ Royalties are calculated by `LuciRoyaltyModel` from a configured mint price. The
 calculateRoyalty(collection, tokenId, salePrice)
 ```
 
-The royalty model returns the royalty recipient and the royalty amount. The marketplace pays royalties before paying seller proceeds.
+The royalty model returns the royalty recipient and the royalty amount. The marketplace pays royalties before paying seller proceeds. Listings snapshot the royalty amount when created but resolve the current recipient when purchased. Bids resolve both values when accepted.
 
 ### Configuration
 
@@ -288,7 +288,8 @@ The marketplace can be configured with a Chainalysis-compatible sanctions list. 
 
 When a sanctions list is configured:
 
-- Sanctioned users cannot list, extend listings, delist, buy, place bids, increase bids, extend bids, cancel bids, or accept bids.
+- Sanctioned users cannot list, extend listings, buy, place bids, increase bids, extend bids, cancel bids, or accept bids.
+- Sanctioned sellers can delist because deleting a listing does not transfer or release assets.
 - Buyers are checked in `buy`.
 - Listing sellers are checked in `buy`.
 - Sellers and bidders are checked when bids are accepted.
@@ -301,7 +302,7 @@ The marketplace owner can update the sanctions list address.
 When paused:
 
 - New listings, listing extensions, purchases, bid placements, bid increases, bid extensions, and bid acceptances are blocked.
-- Delisting remains available, subject to sanctions checks.
+- Delisting remains available without a sanctions check.
 - Bid cancellation remains available, subject to sanctions checks.
 
 Pausing does not delete orders or refund escrow automatically.
@@ -342,12 +343,12 @@ Owner-managed trait data is trusted. The marketplace does not derive traits from
 - **User-managed stale orders**: users, frontends, and indexers are expected to manage stale listings and stale bids. Fulfillment paths re-check ownership, approval, allowlist status, trait validity, expiration, sanctions status, and payment amount.
 - **Re-approved orders can reactivate**: removing a collection or token blocks fulfillment while removed, but existing unexpired orders can become executable again if allowlisted later.
 - **Fixed-gas ETH transfers**: ETH payouts use `call` with `100_000` gas. This supports normal EOAs and many smart wallets while bounding recipient execution, but recipients requiring more gas can cause their own payout path to revert.
-- **Allowed collection trust**: settlement uses `safeTransferFrom` and assumes allowed ERC-721 collections behave correctly.
+- **Allowed collection trust**: settlement uses `transferFrom` and assumes allowed ERC-721 collections behave correctly.
 
 ## Security Considerations
 
 - **Reentrancy**: external state-changing functions use `ReentrancyGuardTransient`. State changes happen before external calls.
-- **ERC-721 receiver callbacks**: NFT transfers use `safeTransferFrom`, which may call `onERC721Received` on contract buyers. The reentrancy guard protects marketplace entry points during that callback.
+- **Contract buyers**: NFT transfers use `transferFrom`, so settlement does not call `onERC721Received`. Contract buyers are responsible for ensuring they can manage received NFTs.
 - **ETH payouts**: failed ETH sends revert settlement or cancellation. Contract sellers, bidders, or royalty recipients should be able to receive ETH within the gas cap.
 - **Sanctioned escrow**: sanctioned bidders cannot withdraw bid escrow until no longer sanctioned.
 - **Owner trust**: owners can pause trading, change allowlists, set traits, change the royalty model, change sanctions enforcement, and configure royalties.

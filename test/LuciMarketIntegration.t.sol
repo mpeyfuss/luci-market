@@ -2,6 +2,7 @@
 pragma solidity 0.8.30;
 
 import {LuciMarket} from "../src/LuciMarket.sol";
+import {LuciRoyaltyModel} from "../src/LuciRoyaltyModel.sol";
 import {LuciTestBase} from "./LuciTestBase.sol";
 import {RejectEthActor, ReenteringBuyer} from "./mocks/MarketplaceMocks.sol";
 
@@ -21,7 +22,7 @@ contract LuciMarketIntegrationTest is LuciTestBase {
         assertEq(royaltyRecipient.balance, recipientBefore + 1 ether);
         assertEq(address(market).balance, 0);
 
-        (address listingSeller,,,) = market.listings(address(nft), TOKEN_ID);
+        (address listingSeller,,,,) = market.listings(address(nft), TOKEN_ID);
         assertEq(listingSeller, address(0));
     }
 
@@ -36,6 +37,63 @@ contract LuciMarketIntegrationTest is LuciTestBase {
         market.buy{value: PRICE}(address(nft), TOKEN_ID);
 
         assertEq(nft.ownerOf(TOKEN_ID), buyer);
+    }
+
+    function test_buyUsesSnapshottedRoyaltyAmountAfterConfigurationChanges() public {
+        _list(TOKEN_ID, PRICE, address(0));
+        uint256 sellerBefore = seller.balance;
+        uint256 recipientBefore = royaltyRecipient.balance;
+
+        vm.prank(owner);
+        royaltyModel.configureCollection(address(nft), uint192(PRICE));
+
+        vm.prank(buyer);
+        market.buy{value: PRICE}(address(nft), TOKEN_ID);
+
+        assertEq(seller.balance, sellerBefore + 9 ether);
+        assertEq(royaltyRecipient.balance, recipientBefore + 1 ether);
+    }
+
+    function test_buyUsesCurrentRoyaltyRecipientWithSnapshottedAmount() public {
+        _list(TOKEN_ID, PRICE, address(0));
+        address newRecipient = makeAddr("newRecipient");
+
+        vm.prank(owner);
+        royaltyModel.setRoyaltyRecipient(newRecipient);
+
+        vm.prank(buyer);
+        market.buy{value: PRICE}(address(nft), TOKEN_ID);
+
+        assertEq(newRecipient.balance, 1 ether);
+        assertEq(royaltyRecipient.balance, 0);
+    }
+
+    function test_buyUsesReplacementModelRecipientWithSnapshottedAmount() public {
+        _list(TOKEN_ID, PRICE, address(0));
+        address newRecipient = makeAddr("replacementRecipient");
+        LuciRoyaltyModel replacementModel = new LuciRoyaltyModel(owner, newRecipient);
+
+        vm.prank(owner);
+        market.setRoyaltyModel(address(replacementModel));
+
+        vm.prank(buyer);
+        market.buy{value: PRICE}(address(nft), TOKEN_ID);
+
+        assertEq(newRecipient.balance, 1 ether);
+    }
+
+    function test_acceptBidCalculatesRoyaltyAtAcceptance() public {
+        _placeTokenBid(TOKEN_ID, PRICE);
+        uint256 sellerBefore = seller.balance;
+
+        vm.prank(owner);
+        royaltyModel.configureCollection(address(nft), uint192(PRICE));
+
+        vm.prank(seller);
+        market.acceptBid(_tokenBid(TOKEN_ID), bidder, PRICE);
+
+        assertEq(seller.balance, sellerBefore + PRICE);
+        assertEq(royaltyRecipient.balance, 0);
     }
 
     function test_acceptTokenBidTransfersNftClearsBidAndClearsListing() public {
@@ -57,7 +115,7 @@ contract LuciMarketIntegrationTest is LuciTestBase {
         assertEq(address(market).balance, 0);
 
         (uint192 bidAmount,) = market.tokenBids(bidder, address(nft), TOKEN_ID);
-        (address listingSeller,,,) = market.listings(address(nft), TOKEN_ID);
+        (address listingSeller,,,,) = market.listings(address(nft), TOKEN_ID);
         assertEq(bidAmount, 0);
         assertEq(listingSeller, address(0));
     }
@@ -199,7 +257,7 @@ contract LuciMarketIntegrationTest is LuciTestBase {
         market.buy{value: PRICE}(address(nft), TOKEN_ID);
 
         assertEq(nft.ownerOf(TOKEN_ID), buyer);
-        (address listingSeller,,,) = market.listings(address(nft), TOKEN_ID);
+        (address listingSeller,,,,) = market.listings(address(nft), TOKEN_ID);
         assertEq(listingSeller, address(0));
     }
 
@@ -403,7 +461,7 @@ contract LuciMarketIntegrationTest is LuciTestBase {
         market.buy{value: PRICE}(address(nft), 99);
 
         assertEq(nft.ownerOf(99), address(rejectingSeller));
-        (address listingSeller,,,) = market.listings(address(nft), 99);
+        (address listingSeller,,,,) = market.listings(address(nft), 99);
         assertEq(listingSeller, address(rejectingSeller));
     }
 
@@ -418,11 +476,11 @@ contract LuciMarketIntegrationTest is LuciTestBase {
         market.buy{value: PRICE}(address(nft), TOKEN_ID);
 
         assertEq(nft.ownerOf(TOKEN_ID), seller);
-        (address listingSeller,,,) = market.listings(address(nft), TOKEN_ID);
+        (address listingSeller,,,,) = market.listings(address(nft), TOKEN_ID);
         assertEq(listingSeller, seller);
     }
 
-    function test_reentrancyDuringSafeTransferCallbackIsBlocked() public {
+    function test_transferFromDoesNotCallReceiverCallback() public {
         ReenteringBuyer reenteringBuyer = new ReenteringBuyer();
         vm.deal(address(reenteringBuyer), PRICE);
         _list(TOKEN_ID, PRICE, address(reenteringBuyer));
@@ -430,7 +488,7 @@ contract LuciMarketIntegrationTest is LuciTestBase {
 
         reenteringBuyer.buy{value: PRICE}(address(nft), TOKEN_ID);
 
-        assertTrue(reenteringBuyer.attempted());
+        assertFalse(reenteringBuyer.attempted());
         assertFalse(reenteringBuyer.reentered());
         assertEq(nft.ownerOf(TOKEN_ID), address(reenteringBuyer));
         assertEq(address(market).balance, 0);

@@ -22,7 +22,8 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         address seller; // slot 0 (20 bytes)
         uint64 expiresAt; // slot 0 (8 bytes)
         uint256 price; // slot 1 (32 bytes)
-        address buyer; // slot 2 (20 bytes) - address(0) means anyone can buy
+        uint256 royaltyAmount; // slot 2 (32 bytes)
+        address buyer; // slot 3 (20 bytes) - address(0) means anyone can buy
     }
 
     struct Bid {
@@ -98,7 +99,8 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         address indexed seller,
         uint256 price,
         uint64 expiresAt,
-        address buyer
+        address buyer,
+        uint256 royaltyAmount
     );
     event Delisted(address indexed collection, uint256 indexed tokenId, address indexed seller);
     event Sold(
@@ -173,6 +175,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
     error IncorrectPayment();
     error InvalidListingExpiration();
     error InvalidPrice();
+    error InvalidRoyaltyAmount();
     error InvalidTraitKey();
     error IsPaused();
     error ListingExpired();
@@ -231,10 +234,15 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         if (nft.ownerOf(tokenId) != msg.sender) revert NotTokenOwner();
         if (!_isApproved(nft, msg.sender, tokenId)) revert NotApproved();
 
-        // effects
-        listings[collection][tokenId] = Listing({seller: msg.sender, expiresAt: expiresAt, price: price, buyer: buyer});
+        (, uint256 royaltyAmount) = _getRoyaltyInfo(collection, tokenId, price);
+        if (royaltyAmount > price) revert InvalidRoyaltyAmount();
 
-        emit Listed(collection, tokenId, msg.sender, price, expiresAt, buyer);
+        // effects
+        listings[collection][tokenId] = Listing({
+            seller: msg.sender, expiresAt: expiresAt, price: price, royaltyAmount: royaltyAmount, buyer: buyer
+        });
+
+        emit Listed(collection, tokenId, msg.sender, price, expiresAt, buyer, royaltyAmount);
     }
 
     /// @notice Extend listing(s)
@@ -258,15 +266,23 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
 
             listing.expiresAt = expiresAt;
 
-            emit Listed(token.collection, token.tokenId, msg.sender, listing.price, expiresAt, listing.buyer);
+            emit Listed(
+                token.collection,
+                token.tokenId,
+                msg.sender,
+                listing.price,
+                expiresAt,
+                listing.buyer,
+                listing.royaltyAmount
+            );
         }
     }
 
     /// @notice Remove listing(s)
-    /// @dev Compatible with batch operations for UX benefits. Always allowed, even when paused (except if sanctioned).
+    /// @dev Compatible with batch operations for UX benefits. Always allowed, even when paused.
+    /// @dev Does not check sanctions as listing does not escrow assets so sanctioned addresses should be able to delist.
     function delist(Token[] calldata tokens) external nonReentrant {
         // checks
-        _checkSanctionsList(msg.sender);
         uint256 num = tokens.length;
         if (num == 0) revert ZeroLengthArray();
 
@@ -295,9 +311,10 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         delete listings[collection][tokenId];
 
         // interactions
-        uint256 royalty = _settleSale(nft, collection, tokenId, listing.seller, msg.sender, listing.price);
+        (address royaltyRecipient,) = _getRoyaltyInfo(collection, tokenId, listing.price);
+        _settleSale(nft, tokenId, listing.seller, msg.sender, listing.price, royaltyRecipient, listing.royaltyAmount);
 
-        emit Sold(collection, tokenId, msg.sender, listing.seller, listing.price, royalty);
+        emit Sold(collection, tokenId, msg.sender, listing.seller, listing.price, listing.royaltyAmount);
     }
 
     /////////////////////////////////////////////////////////////////////
@@ -435,7 +452,9 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         _clearListing(bidSelector.collection, bidSelector.tokenId); // avoids stale listing attack
 
         // interactions
-        uint256 royalty = _settleSale(nft, bidSelector.collection, bidSelector.tokenId, msg.sender, bidder, bid.amount);
+        (address royaltyRecipient, uint256 royaltyAmount) =
+            _getRoyaltyInfo(bidSelector.collection, bidSelector.tokenId, bid.amount);
+        _settleSale(nft, bidSelector.tokenId, msg.sender, bidder, bid.amount, royaltyRecipient, royaltyAmount);
 
         uint256 traitKey = bidSelector.bidType == BidType.TRAIT ? bidSelector.traitKey : 0;
         emit BidAccepted(
@@ -446,7 +465,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
             traitKey,
             msg.sender,
             bid.amount,
-            royalty
+            royaltyAmount
         );
     }
 
@@ -725,29 +744,36 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         emit BidCanceled(BidType.TRAIT, collection, sender, 0, traitKey);
     }
 
-    /// @dev Settle a sale: calculate royalties, record sale, clear inquiries, transfer NFT and payments
+    /// @dev Get the current royalty recipient and royalty amount for a sale
+    function _getRoyaltyInfo(address collection, uint256 tokenId, uint256 salePrice)
+        internal
+        view
+        returns (address recipient, uint256 royaltyAmount)
+    {
+        return LuciRoyaltyModel(royaltyModel).calculateRoyalty(collection, tokenId, salePrice);
+    }
+
+    /// @dev Settle a sale using royalty information resolved by the caller
+    ///      Uses `transferFrom` as a contract purchasing should be able to receive ERC-721 tokens and the liability falls on the buyer.
     function _settleSale(
         IERC721 nft,
-        address collection,
         uint256 tokenId,
         address seller,
         address buyer,
-        uint256 salePrice
-    ) internal returns (uint256) {
-        // Calculate royalties
-        (address royaltyRecipient, uint256 royalty) =
-            LuciRoyaltyModel(royaltyModel).calculateRoyalty(collection, tokenId, salePrice);
-        uint256 sellerProceeds = salePrice - royalty;
+        uint256 salePrice,
+        address royaltyRecipient,
+        uint256 royaltyAmount
+    ) internal {
+        if (royaltyAmount > salePrice) revert InvalidRoyaltyAmount();
+        uint256 sellerProceeds = salePrice - royaltyAmount;
 
         // Transfer NFT
-        nft.safeTransferFrom(seller, buyer, tokenId);
+        nft.transferFrom(seller, buyer, tokenId);
 
         // Transfer payments
-        if (royalty > 0) {
-            _safeTransferEth(royaltyRecipient, royalty);
+        if (royaltyAmount > 0) {
+            _safeTransferEth(royaltyRecipient, royaltyAmount);
         }
         _safeTransferEth(seller, sellerProceeds);
-
-        return royalty;
     }
 }
