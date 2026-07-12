@@ -4,6 +4,7 @@ pragma solidity 0.8.30;
 import {Ownable2Step, Ownable} from "@openzeppelin-contracts-5.6.1/access/Ownable2Step.sol";
 import {ReentrancyGuardTransient} from "@openzeppelin-contracts-5.6.1/utils/ReentrancyGuardTransient.sol";
 import {IERC721} from "@openzeppelin-contracts-5.6.1/token/ERC721/IERC721.sol";
+import {LibMap} from "solady-0.1.26/utils/LibMap.sol";
 import {LuciRoyaltyModel} from "./LuciRoyaltyModel.sol";
 import {ISanctionsList} from "./interfaces/ISanctionsList.sol";
 
@@ -14,6 +15,8 @@ import {ISanctionsList} from "./interfaces/ISanctionsList.sol";
 /// @author rhynotic
 /// @author Sam Spratt
 contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
+    using LibMap for LibMap.Uint32Map;
+
     /////////////////////////////////////////////////////////////////////
     // TYPES
     /////////////////////////////////////////////////////////////////////
@@ -87,7 +90,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
     mapping(address bidder => mapping(address collection => mapping(uint256 traitKey => Bid))) public traitBids;
 
     /// @notice Token traits: collection => tokenId => encoded traits
-    mapping(address collection => mapping(uint256 tokenId => uint32)) public tokenTraits;
+    mapping(address collection => LibMap.Uint32Map) private _tokenTraits;
 
     /////////////////////////////////////////////////////////////////////
     // EVENTS
@@ -431,7 +434,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
             if (!_validateTraitKey(bidSelector.traitKey, collectionTraitConfigs[bidSelector.collection])) {
                 revert InvalidTraitKey();
             }
-            uint32 traits = tokenTraits[bidSelector.collection][bidSelector.tokenId];
+            uint32 traits = _tokenTraits[bidSelector.collection].get(bidSelector.tokenId);
             if (!_matchesTraitBid(traits, bidSelector.traitKey)) revert TraitMismatch();
         }
 
@@ -607,10 +610,19 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
 
         uint256 num = tokenIds.length;
         for (uint256 i = 0; i < num; ++i) {
-            tokenTraits[collection][tokenIds[i]] = traitsArray[i];
+            _tokenTraits[collection].set(tokenIds[i], traitsArray[i]);
         }
 
         emit TraitsSet(collection, tokenIds, traitsArray);
+    }
+
+    /////////////////////////////////////////////////////////////////////
+    // VIEW FUNCTIONS
+    /////////////////////////////////////////////////////////////////////
+
+    /// @notice Get the encoded traits for a collection token
+    function tokenTraits(address collection, uint256 tokenId) external view returns (uint32) {
+        return _tokenTraits[collection].get(tokenId);
     }
 
     /////////////////////////////////////////////////////////////////////

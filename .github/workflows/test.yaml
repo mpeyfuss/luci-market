@@ -1,0 +1,46 @@
+name: test
+
+on:
+  push:
+    tags-ignore:
+      - '**'  # This ignores all tags
+
+env:
+  FOUNDRY_PROFILE: ci
+
+jobs:
+  check:
+    name: Foundry project
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Install dependencies
+        id: deps
+        run: |
+          make install
+
+      - name: Show Forge version
+        id: version
+        run: |
+          forge --version
+
+      - name: Run Forge fmt
+        id: fmt
+        run: |
+          make fmt
+
+      - name: Run Forge build
+        id: build
+        run: |
+          make build
+
+      - name: Run Forge tests
+        id: test
+        run: |
+          make test-quick

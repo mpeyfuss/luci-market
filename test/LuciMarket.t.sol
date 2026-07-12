@@ -1018,6 +1018,18 @@ contract LuciMarketTest is LuciTestBase {
         market.cancelBids(selectors);
     }
 
+    function test_setTraitsDenseBatch8() public {
+        _setTraitsDenseBatch(8);
+    }
+
+    function test_setTraitsDenseBatch64() public {
+        _setTraitsDenseBatch(64);
+    }
+
+    function test_setTraitsDenseBatch256() public {
+        _setTraitsDenseBatch(256);
+    }
+
     function test_setTraitsRequiresAllowedCollectionAndMatchingArrayLengths() public {
         uint256[] memory tokenIds = new uint256[](1);
         uint32[] memory traitsArray = new uint32[](2);
@@ -1034,5 +1046,26 @@ contract LuciMarketTest is LuciTestBase {
         vm.expectRevert(LuciMarket.CollectionNotAllowed.selector);
         vm.prank(owner);
         market.setTraits(makeAddr("collection"), tokenIds, oneTrait);
+    }
+
+    function _setTraitsDenseBatch(uint256 size) internal {
+        uint256[] memory tokenIds = new uint256[](size);
+        uint32[] memory traitsArray = new uint32[](size);
+        uint32 traits = _trait(0, 5);
+
+        for (uint256 i = 0; i < size; ++i) {
+            tokenIds[i] = i;
+            traitsArray[i] = traits;
+        }
+
+        vm.expectEmit(true, true, true, true, address(market));
+        emit LuciMarket.TraitsSet(address(nft), tokenIds, traitsArray);
+
+        vm.prank(owner);
+        market.setTraits(address(nft), tokenIds, traitsArray);
+
+        assertEq(market.tokenTraits(address(nft), tokenIds[0]), traits);
+        assertEq(market.tokenTraits(address(nft), tokenIds[size / 2]), traits);
+        assertEq(market.tokenTraits(address(nft), tokenIds[size - 1]), traits);
     }
 }
