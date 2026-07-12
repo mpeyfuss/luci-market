@@ -179,7 +179,6 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
     error InvalidTraitKey();
     error IsPaused();
     error ListingExpired();
-    error ListingOwnerNotTokenOwner();
     error NotApproved();
     error NoBidExists();
     error NotListed();
@@ -305,7 +304,6 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         if (msg.value != listing.price) revert IncorrectPayment();
 
         IERC721 nft = IERC721(collection);
-        if (nft.ownerOf(tokenId) != listing.seller) revert ListingOwnerNotTokenOwner(); // verify seller still owns the NFT
 
         // effects
         delete listings[collection][tokenId];
@@ -438,8 +436,6 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         }
 
         IERC721 nft = IERC721(bidSelector.collection);
-        if (nft.ownerOf(bidSelector.tokenId) != msg.sender) revert NotTokenOwner();
-        if (!_isApproved(nft, msg.sender, bidSelector.tokenId)) revert NotApproved();
 
         // effects
         if (bidSelector.bidType == BidType.TOKEN) {

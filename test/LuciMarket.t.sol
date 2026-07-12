@@ -5,6 +5,7 @@ import {LuciMarket} from "../src/LuciMarket.sol";
 import {LuciRoyaltyModel} from "../src/LuciRoyaltyModel.sol";
 import {LuciTestBase} from "./LuciTestBase.sol";
 import {MockERC721, MockRoyaltyModel} from "./mocks/MarketplaceMocks.sol";
+import {IERC721Errors} from "@openzeppelin-contracts-5.6.1/interfaces/draft-IERC6093.sol";
 
 contract LuciMarketTest is LuciTestBase {
     function test_constructorSetsOwnerRoyaltyModelAndSanctionsList() public view {
@@ -312,9 +313,16 @@ contract LuciMarketTest is LuciTestBase {
         vm.prank(seller);
         nft.transferFrom(seller, other, TOKEN_ID_TWO);
 
-        vm.expectRevert(LuciMarket.ListingOwnerNotTokenOwner.selector);
+        uint256 buyerBalanceBefore = buyer.balance;
+        vm.expectRevert(
+            abi.encodeWithSelector(IERC721Errors.ERC721InsufficientApproval.selector, address(market), TOKEN_ID_TWO)
+        );
         vm.prank(buyer);
         market.buy{value: PRICE}(address(nft), TOKEN_ID_TWO);
+
+        (address listingSeller,,,,) = market.listings(address(nft), TOKEN_ID_TWO);
+        assertEq(listingSeller, seller);
+        assertEq(buyer.balance, buyerBalanceBefore);
     }
 
     function test_pausedBlocksActiveOrderPathsButAllowsCancelAndDelist() public {
@@ -452,21 +460,36 @@ contract LuciMarketTest is LuciTestBase {
     function test_acceptTokenBidErrors() public {
         vm.prank(bidder);
         market.placeBid{value: 1 ether}(_tokenBid(TOKEN_ID), _expires(1 days));
+        _list(TOKEN_ID, PRICE, address(0));
 
         vm.expectRevert(LuciMarket.BidTooLow.selector);
         vm.prank(seller);
         market.acceptBid(_tokenBid(TOKEN_ID), bidder, 2 ether);
 
-        vm.expectRevert(LuciMarket.NotTokenOwner.selector);
+        vm.expectRevert(abi.encodeWithSelector(IERC721Errors.ERC721IncorrectOwner.selector, other, TOKEN_ID, seller));
         vm.prank(other);
         market.acceptBid(_tokenBid(TOKEN_ID), bidder, 0);
+
+        (uint192 tokenBidAmount,) = market.tokenBids(bidder, address(nft), TOKEN_ID);
+        (address listingSeller,,,,) = market.listings(address(nft), TOKEN_ID);
+        assertEq(tokenBidAmount, 1 ether);
+        assertEq(listingSeller, seller);
+        assertEq(address(market).balance, 1 ether);
 
         vm.prank(seller);
         nft.setApprovalForAll(address(market), false);
 
-        vm.expectRevert(LuciMarket.NotApproved.selector);
+        vm.expectRevert(
+            abi.encodeWithSelector(IERC721Errors.ERC721InsufficientApproval.selector, address(market), TOKEN_ID)
+        );
         vm.prank(seller);
         market.acceptBid(_tokenBid(TOKEN_ID), bidder, 0);
+
+        (tokenBidAmount,) = market.tokenBids(bidder, address(nft), TOKEN_ID);
+        (listingSeller,,,,) = market.listings(address(nft), TOKEN_ID);
+        assertEq(tokenBidAmount, 1 ether);
+        assertEq(listingSeller, seller);
+        assertEq(address(market).balance, 1 ether);
 
         vm.prank(seller);
         nft.setApprovalForAll(address(market), true);
@@ -549,21 +572,36 @@ contract LuciMarketTest is LuciTestBase {
         market.acceptBid(_collectionBid(TOKEN_ID), bidder, 0);
 
         _placeCollectionBid(1 ether);
+        _list(TOKEN_ID, PRICE, address(0));
 
         vm.expectRevert(LuciMarket.BidTooLow.selector);
         vm.prank(seller);
         market.acceptBid(_collectionBid(TOKEN_ID), bidder, 2 ether);
 
-        vm.expectRevert(LuciMarket.NotTokenOwner.selector);
+        vm.expectRevert(abi.encodeWithSelector(IERC721Errors.ERC721IncorrectOwner.selector, other, TOKEN_ID, seller));
         vm.prank(other);
         market.acceptBid(_collectionBid(TOKEN_ID), bidder, 0);
+
+        (uint192 collectionBidAmount,) = market.collectionBids(bidder, address(nft));
+        (address listingSeller,,,,) = market.listings(address(nft), TOKEN_ID);
+        assertEq(collectionBidAmount, 1 ether);
+        assertEq(listingSeller, seller);
+        assertEq(address(market).balance, 1 ether);
 
         vm.prank(seller);
         nft.setApprovalForAll(address(market), false);
 
-        vm.expectRevert(LuciMarket.NotApproved.selector);
+        vm.expectRevert(
+            abi.encodeWithSelector(IERC721Errors.ERC721InsufficientApproval.selector, address(market), TOKEN_ID)
+        );
         vm.prank(seller);
         market.acceptBid(_collectionBid(TOKEN_ID), bidder, 0);
+
+        (collectionBidAmount,) = market.collectionBids(bidder, address(nft));
+        (listingSeller,,,,) = market.listings(address(nft), TOKEN_ID);
+        assertEq(collectionBidAmount, 1 ether);
+        assertEq(listingSeller, seller);
+        assertEq(address(market).balance, 1 ether);
     }
 
     function test_traitBidValidationLifecycleAndMatchingFailures() public {
@@ -673,17 +711,32 @@ contract LuciMarketTest is LuciTestBase {
         traitsArray[0] = _trait(0, 5);
         vm.prank(owner);
         market.setTraits(address(nft), tokenIds, traitsArray);
+        _list(TOKEN_ID, PRICE, address(0));
 
-        vm.expectRevert(LuciMarket.NotTokenOwner.selector);
+        vm.expectRevert(abi.encodeWithSelector(IERC721Errors.ERC721IncorrectOwner.selector, other, TOKEN_ID, seller));
         vm.prank(other);
         market.acceptBid(_traitBid(TOKEN_ID, traitKey), bidder, 0);
+
+        (uint192 traitBidAmount,) = market.traitBids(bidder, address(nft), traitKey);
+        (address listingSeller,,,,) = market.listings(address(nft), TOKEN_ID);
+        assertEq(traitBidAmount, 1 ether);
+        assertEq(listingSeller, seller);
+        assertEq(address(market).balance, 1 ether);
 
         vm.prank(seller);
         nft.setApprovalForAll(address(market), false);
 
-        vm.expectRevert(LuciMarket.NotApproved.selector);
+        vm.expectRevert(
+            abi.encodeWithSelector(IERC721Errors.ERC721InsufficientApproval.selector, address(market), TOKEN_ID)
+        );
         vm.prank(seller);
         market.acceptBid(_traitBid(TOKEN_ID, traitKey), bidder, 0);
+
+        (traitBidAmount,) = market.traitBids(bidder, address(nft), traitKey);
+        (listingSeller,,,,) = market.listings(address(nft), TOKEN_ID);
+        assertEq(traitBidAmount, 1 ether);
+        assertEq(listingSeller, seller);
+        assertEq(address(market).balance, 1 ether);
     }
 
     function test_extendBidsRevertsForMissingBidAndExpiredTimestamp() public {

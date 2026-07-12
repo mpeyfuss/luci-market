@@ -75,14 +75,14 @@ contract LuciRoyaltyModel is Ownable2Step {
         // set recipient
         recipient = royaltyRecipient;
 
-        // cache data
-        CollectionConfig memory collectionConfig = collections[collection];
-        TokenOverride memory tokenOverride = tokenOverrides[collection][tokenId];
-
         // determine mint price
-        uint256 mintPrice = collectionConfig.mintPrice;
+        uint256 mintPrice;
+        TokenOverride memory tokenOverride = tokenOverrides[collection][tokenId];
         if (tokenOverride.enabled) {
             mintPrice = tokenOverride.mintPrice;
+        } else {
+            CollectionConfig memory collectionConfig = collections[collection];
+            mintPrice = collectionConfig.mintPrice;
         }
 
         // calculate royalty
