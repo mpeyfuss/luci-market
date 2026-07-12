@@ -14,13 +14,13 @@ Both main contracts use `Ownable2Step`. The marketplace owner and royalty model 
 
 ## Listings
 
-Token owners can list NFTs for a fixed ETH price. Listings are time-gated with a maximum duration of 180 days and do not escrow the NFT. The token remains in the seller's wallet until purchased. The royalty amount is calculated and stored when the listing is created, locking in the seller's proceeds even if royalty configuration changes later. Calling `list` again for the same token updates or replaces the stored listing, including stale listings left by a previous owner, and snapshots a new royalty amount.
+Token owners can list NFTs for a fixed ETH price. Listings are time-gated with a maximum duration of 180 days and do not escrow the NFT. The token remains in the seller's wallet until purchased. Listing requires the marketplace to be approved for the token so incorrect approval or UI flows fail immediately instead of publishing an already unfulfillable listing. The royalty amount is calculated and stored when the listing is created, locking in the seller's proceeds even if royalty configuration changes later. Calling `list` again for the same token updates or replaces the stored listing, including stale listings left by a previous owner, and snapshots a new royalty amount.
 
 Listings can be public or private. A public listing sets `buyer` to `address(0)` and can be purchased by anyone. A private listing sets `buyer` to a specific address, and only that address can call `buy`.
 
 Listings can be extended in batch while the marketplace is unpaused and the collection or token remains allowed. Extension can revive expired listings as long as the stored seller calls it and the new expiration is valid, and it preserves the snapshotted royalty amount. Listings can be delisted at any time, including while the marketplace is paused, after the collection/token has been removed from the allowlist, or while the seller is sanctioned. Delisting does not transfer or release assets, so it does not perform a sanctions check.
 
-If a listed token is transferred outside the marketplace, the listing becomes stale. The `buy` function verifies that the stored seller still owns the token at execution time and relies on the ERC-721 approval check inside `transferFrom`. A stale or approval-blocked listing can become executable again if the original seller reacquires or re-approves the token before expiry, so frontends and indexers should filter stale listings.
+If a listed token is transferred outside the marketplace, the listing becomes stale. Approval can also be revoked after listing. At settlement, the ERC-721 `transferFrom` call enforces that the stored seller currently owns the token and that the marketplace is currently approved. A stale or approval-blocked listing can become executable again if the original seller reacquires or re-approves the token before expiry, so frontends and indexers should filter stale listings.
 
 ## Offers
 
@@ -50,15 +50,14 @@ flowchart TD
     B --> C[Buyer calls buy with exact ETH]
     C --> D{Marketplace unpaused and collection/token allowed?}
     D -- No --> X[Revert]
-    D -- Yes --> E{Buyer, seller, expiry, and private buyer valid?}
+    D -- Yes --> E{Buyer, sanctions, expiry, private buyer, and payment valid?}
     E -- No --> X
-    E -- Yes --> F{Stored seller still owns token?}
-    F -- No --> X
-    F -- Yes --> G[Delete listing]
-    G --> H[Calculate royalty]
-    H --> I[Transfer NFT with transferFrom]
-    I --> J[Pay royalty, then seller]
-    J --> K[Emit Sold]
+    E -- Yes --> F[Delete listing]
+    F --> G[Resolve current royalty recipient]
+    G --> H[Transfer NFT with transferFrom]
+    H -- Ownership or approval invalid --> X
+    H -- Success --> I[Pay snapshotted royalty amount, then seller]
+    I --> J[Emit Sold]
 ```
 
 ### Token Bid
@@ -73,10 +72,10 @@ flowchart TD
     B --> G[Seller accepts token bid]
     G --> H{Allowed, unpaused, unsanctioned, unexpired, minAmount met?}
     H -- No --> X[Revert]
-    H -- Yes --> I{Seller owns token and approved market?}
-    I -- No --> X
-    I -- Yes --> J[Delete bid and clear listing]
-    J --> K[Transfer NFT and pay royalty/seller]
+    H -- Yes --> I[Delete bid and clear listing]
+    I --> J[Transfer NFT with transferFrom]
+    J -- Ownership or approval invalid --> X
+    J -- Success --> K[Pay royalty and seller]
     K --> L[Emit BidAccepted with TOKEN type]
 ```
 
@@ -88,10 +87,10 @@ flowchart TD
     B --> C[Seller accepts for any token in allowed collection]
     C --> D{Collection allowed, unpaused, unsanctioned, unexpired, minAmount met?}
     D -- No --> X[Revert]
-    D -- Yes --> E{Seller owns token and approved market?}
-    E -- No --> X
-    E -- Yes --> F[Delete bid and clear listing]
-    F --> G[Transfer NFT and pay royalty/seller]
+    D -- Yes --> E[Delete bid and clear listing]
+    E --> F[Transfer NFT with transferFrom]
+    F -- Ownership or approval invalid --> X
+    F -- Success --> G[Pay royalty and seller]
     G --> H[Emit BidAccepted with COLLECTION type]
 ```
 
@@ -112,8 +111,10 @@ flowchart TD
     H -- Yes --> I{Token trait values match key?}
     I -- No --> Z[Revert TraitMismatch]
     I -- Yes --> J[Delete bid and clear listing]
-    J --> K[Transfer NFT and pay royalty/seller]
-    K --> L[Emit BidAccepted with TRAIT type]
+    J --> K[Transfer NFT with transferFrom]
+    K -- Ownership or approval invalid --> X
+    K -- Success --> L[Pay royalty and seller]
+    L --> M[Emit BidAccepted with TRAIT type]
 ```
 
 ## Collection And Token Allowlisting
@@ -133,7 +134,7 @@ Royalties are calculated by `LuciRoyaltyModel` from a configured mint price. The
 calculateRoyalty(collection, tokenId, salePrice)
 ```
 
-The royalty model returns the royalty recipient and the royalty amount. The marketplace pays royalties before paying seller proceeds. Listings snapshot the royalty amount when created but resolve the current recipient when purchased. Bids resolve both values when accepted.
+The royalty model returns the royalty recipient and the royalty amount. The marketplace pays royalties before paying seller proceeds. Listings snapshot the royalty amount when created but resolve the current recipient from the marketplace's current royalty model when purchased. Changing the royalty recipient or replacing the marketplace royalty model therefore changes where an existing listing's snapshotted royalty is paid without changing the seller's proceeds. Bids resolve both values when accepted.
 
 ### Configuration
 
@@ -343,6 +344,7 @@ Owner-managed trait data is trusted. The marketplace does not derive traits from
 - **User-managed stale orders**: users, frontends, and indexers are expected to manage stale listings and stale bids. Fulfillment paths re-check ownership, approval, allowlist status, trait validity, expiration, sanctions status, and payment amount.
 - **Re-approved orders can reactivate**: removing a collection or token blocks fulfillment while removed, but existing unexpired orders can become executable again if allowlisted later.
 - **Fixed-gas ETH transfers**: ETH payouts use `call` with `100_000` gas. This supports normal EOAs and many smart wallets while bounding recipient execution, but recipients requiring more gas can cause their own payout path to revert.
+- **Current royalty recipient availability**: existing listings pay their snapshotted royalty amount to the recipient returned by the current royalty model. If that recipient cannot accept ETH within the fixed gas cap, settlement reverts.
 - **Allowed collection trust**: settlement uses `transferFrom` and assumes allowed ERC-721 collections behave correctly.
 
 ## Security Considerations
