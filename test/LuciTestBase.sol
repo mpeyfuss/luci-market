@@ -65,17 +65,35 @@ abstract contract LuciTestBase is Test {
 
     function _placeTokenBid(uint256 tokenId, uint256 amount) internal {
         vm.prank(bidder);
-        market.placeTokenBid{value: amount}(address(nft), tokenId, _expires(1 days));
+        market.placeBid{value: amount}(_tokenBid(tokenId), _expires(1 days));
     }
 
     function _placeCollectionBid(uint256 amount) internal {
         vm.prank(bidder);
-        market.placeCollectionBid{value: amount}(address(nft), _expires(1 days));
+        market.placeBid{value: amount}(_collectionBid(0), _expires(1 days));
     }
 
     function _placeTraitBid(uint256 traitKey, uint256 amount) internal {
         vm.prank(bidder);
-        market.placeTraitBid{value: amount}(address(nft), traitKey, _expires(1 days));
+        market.placeBid{value: amount}(_traitBid(0, traitKey), _expires(1 days));
+    }
+
+    function _tokenBid(uint256 tokenId) internal view returns (LuciMarket.BidSelector memory) {
+        return LuciMarket.BidSelector({
+            bidType: LuciMarket.BidType.TOKEN, collection: address(nft), tokenId: tokenId, traitKey: 0
+        });
+    }
+
+    function _collectionBid(uint256 tokenId) internal view returns (LuciMarket.BidSelector memory) {
+        return LuciMarket.BidSelector({
+            bidType: LuciMarket.BidType.COLLECTION, collection: address(nft), tokenId: tokenId, traitKey: 0
+        });
+    }
+
+    function _traitBid(uint256 tokenId, uint256 traitKey) internal view returns (LuciMarket.BidSelector memory) {
+        return LuciMarket.BidSelector({
+            bidType: LuciMarket.BidType.TRAIT, collection: address(nft), tokenId: tokenId, traitKey: traitKey
+        });
     }
 
     function _setSanctionsList() internal {

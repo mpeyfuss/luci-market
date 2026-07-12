@@ -110,54 +110,41 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         uint256 royaltyAmount
     );
 
-    event CollectionBidPlaced(address indexed collection, address indexed bidder, uint256 amount, uint64 expiresAt);
-    event CollectionBidIncreased(address indexed collection, address indexed bidder, uint256 newAmount);
-    event CollectionBidExtended(address indexed collection, address indexed bidder, uint64 newExpiresAt);
-    event CollectionBidCanceled(address indexed collection, address indexed bidder);
-    event CollectionBidAccepted(
+    event BidPlaced(
+        BidType indexed bidType,
         address indexed collection,
-        uint256 indexed tokenId,
-        address seller,
         address indexed bidder,
-        uint256 price,
-        uint256 royaltyAmount
-    );
-
-    event TokenBidPlaced(
-        address indexed collection, uint256 indexed tokenId, address indexed bidder, uint256 amount, uint64 expiresAt
-    );
-    event TokenBidIncreased(
-        address indexed collection, uint256 indexed tokenId, address indexed bidder, uint256 newAmount
-    );
-    event TokenBidExtended(
-        address indexed collection, uint256 indexed tokenId, address indexed bidder, uint64 newExpiresAt
-    );
-    event TokenBidCanceled(address indexed collection, uint256 indexed tokenId, address indexed bidder);
-    event TokenBidAccepted(
-        address indexed collection,
-        uint256 indexed tokenId,
-        address seller,
-        address indexed bidder,
-        uint256 price,
-        uint256 royaltyAmount
-    );
-
-    event TraitBidPlaced(
-        address indexed collection, uint256 indexed traitKey, address indexed bidder, uint256 amount, uint64 expiresAt
-    );
-    event TraitBidIncreased(
-        address indexed collection, uint256 indexed traitKey, address indexed bidder, uint256 newAmount
-    );
-    event TraitBidExtended(
-        address indexed collection, uint256 indexed traitKey, address indexed bidder, uint64 newExpiresAt
-    );
-    event TraitBidCanceled(address indexed collection, uint256 indexed traitKey, address indexed bidder);
-    event TraitBidAccepted(
-        address indexed collection,
-        uint256 indexed tokenId,
-        address seller,
-        address indexed bidder,
+        uint256 tokenId,
         uint256 traitKey,
+        uint256 amount,
+        uint64 expiresAt
+    );
+    event BidIncreased(
+        BidType indexed bidType,
+        address indexed collection,
+        address indexed bidder,
+        uint256 tokenId,
+        uint256 traitKey,
+        uint256 newAmount
+    );
+    event BidExtended(
+        BidType indexed bidType,
+        address indexed collection,
+        address indexed bidder,
+        uint256 tokenId,
+        uint256 traitKey,
+        uint64 newExpiresAt
+    );
+    event BidCanceled(
+        BidType indexed bidType, address indexed collection, address indexed bidder, uint256 tokenId, uint256 traitKey
+    );
+    event BidAccepted(
+        BidType indexed bidType,
+        address indexed collection,
+        address indexed bidder,
+        uint256 tokenId,
+        uint256 traitKey,
+        address seller,
         uint256 price,
         uint256 royaltyAmount
     );
@@ -165,7 +152,6 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
     event CollectionAdded(address indexed collection);
     event CollectionRemoved(address indexed collection);
     event CollectionTraitConfigSet(address indexed collection, uint32 config);
-    event CollectionMinHoldTimeSet(address indexed collection, uint64 minHoldTime);
     event TraitsSet(address indexed collection, uint256[] tokenIds, uint32[] traits);
     event PauseToggled(bool paused);
     event RoyaltyModelUpdated(address indexed oldRoyaltyModel, address indexed newRoyaltyModel);
@@ -191,7 +177,6 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
     error IsPaused();
     error ListingExpired();
     error ListingOwnerNotTokenOwner();
-    error MinHoldTimeTooLong();
     error NotApproved();
     error NoBidExists();
     error NotListed();
@@ -316,54 +301,96 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
     }
 
     /////////////////////////////////////////////////////////////////////
-    // TOKEN BID FUNCTIONS
+    // BID FUNCTIONS
     /////////////////////////////////////////////////////////////////////
 
-    /// @notice Place a bid on a specific token
-    /// @param collection The collection address
-    /// @param tokenId The token id
+    /// @notice Place a token, collection, or trait bid
+    /// @param bidSelector The bid type and its identifying fields
     /// @param expiresAt Expiry timestamp (0 = no expiry)
-    function placeTokenBid(address collection, uint256 tokenId, uint64 expiresAt)
-        external
-        payable
-        nonReentrant
-        whenNotPaused
-    {
+    function placeBid(BidSelector calldata bidSelector, uint64 expiresAt) external payable nonReentrant whenNotPaused {
         // checks
         _checkSanctionsList(msg.sender);
-        _checkCollectionOrTokenAllowed(collection, tokenId);
         if (msg.value == 0) revert InvalidPrice();
-        if (tokenBids[msg.sender][collection][tokenId].amount > 0) revert BidAlreadyExists(); // should increase bid instead
         if (expiresAt != 0 && expiresAt < block.timestamp) revert BidExpired();
 
         // effects
-        tokenBids[msg.sender][collection][tokenId] = Bid({amount: uint192(msg.value), expiresAt: expiresAt});
-
-        emit TokenBidPlaced(collection, tokenId, msg.sender, msg.value, expiresAt);
+        if (bidSelector.bidType == BidType.TOKEN) {
+            _checkCollectionOrTokenAllowed(bidSelector.collection, bidSelector.tokenId);
+            if (tokenBids[msg.sender][bidSelector.collection][bidSelector.tokenId].amount > 0) {
+                revert BidAlreadyExists();
+            }
+            tokenBids[msg.sender][bidSelector.collection][bidSelector.tokenId] =
+                Bid({amount: uint192(msg.value), expiresAt: expiresAt});
+            emit BidPlaced(
+                BidType.TOKEN, bidSelector.collection, msg.sender, bidSelector.tokenId, 0, msg.value, expiresAt
+            );
+        } else if (bidSelector.bidType == BidType.COLLECTION) {
+            _checkCollectionAllowed(bidSelector.collection);
+            if (collectionBids[msg.sender][bidSelector.collection].amount > 0) revert BidAlreadyExists();
+            collectionBids[msg.sender][bidSelector.collection] = Bid({amount: uint192(msg.value), expiresAt: expiresAt});
+            emit BidPlaced(BidType.COLLECTION, bidSelector.collection, msg.sender, 0, 0, msg.value, expiresAt);
+        } else {
+            _checkCollectionAllowed(bidSelector.collection);
+            if (!_validateTraitKey(bidSelector.traitKey, collectionTraitConfigs[bidSelector.collection])) {
+                revert InvalidTraitKey();
+            }
+            if (traitBids[msg.sender][bidSelector.collection][bidSelector.traitKey].amount > 0) {
+                revert BidAlreadyExists();
+            }
+            traitBids[msg.sender][bidSelector.collection][bidSelector.traitKey] =
+                Bid({amount: uint192(msg.value), expiresAt: expiresAt});
+            emit BidPlaced(
+                BidType.TRAIT, bidSelector.collection, msg.sender, 0, bidSelector.traitKey, msg.value, expiresAt
+            );
+        }
     }
 
-    /// @notice Increase an existing token bid
+    /// @notice Increase an existing token, collection, or trait bid
     /// @dev Prevents increasing an expired bid
-    function increaseTokenBid(address collection, uint256 tokenId) external payable nonReentrant whenNotPaused {
+    /// @param bidSelector The bid type and its identifying fields
+    function increaseBid(BidSelector calldata bidSelector) external payable nonReentrant whenNotPaused {
         // checks
         _checkSanctionsList(msg.sender);
-        _checkCollectionOrTokenAllowed(collection, tokenId);
         if (msg.value == 0) revert InvalidPrice();
 
-        Bid storage bid = tokenBids[msg.sender][collection][tokenId];
-        if (bid.amount == 0) revert NoBidExists(); // create bid instead
-        _checkBidNotExpired(bid.expiresAt);
-
         // effects
-        uint192 newAmount = bid.amount + uint192(msg.value);
-        bid.amount = newAmount;
-
-        emit TokenBidIncreased(collection, tokenId, msg.sender, newAmount);
+        if (bidSelector.bidType == BidType.TOKEN) {
+            _checkCollectionOrTokenAllowed(bidSelector.collection, bidSelector.tokenId);
+            Bid storage tokenBid = tokenBids[msg.sender][bidSelector.collection][bidSelector.tokenId];
+            if (tokenBid.amount == 0) revert NoBidExists();
+            _checkBidNotExpired(tokenBid.expiresAt);
+            tokenBid.amount += uint192(msg.value);
+            emit BidIncreased(
+                BidType.TOKEN, bidSelector.collection, msg.sender, bidSelector.tokenId, 0, tokenBid.amount
+            );
+        } else if (bidSelector.bidType == BidType.COLLECTION) {
+            _checkCollectionAllowed(bidSelector.collection);
+            Bid storage collectionBid = collectionBids[msg.sender][bidSelector.collection];
+            if (collectionBid.amount == 0) revert NoBidExists();
+            _checkBidNotExpired(collectionBid.expiresAt);
+            collectionBid.amount += uint192(msg.value);
+            emit BidIncreased(BidType.COLLECTION, bidSelector.collection, msg.sender, 0, 0, collectionBid.amount);
+        } else {
+            _checkCollectionAllowed(bidSelector.collection);
+            if (!_validateTraitKey(bidSelector.traitKey, collectionTraitConfigs[bidSelector.collection])) {
+                revert InvalidTraitKey();
+            }
+            Bid storage traitBid = traitBids[msg.sender][bidSelector.collection][bidSelector.traitKey];
+            if (traitBid.amount == 0) revert NoBidExists();
+            _checkBidNotExpired(traitBid.expiresAt);
+            traitBid.amount += uint192(msg.value);
+            emit BidIncreased(
+                BidType.TRAIT, bidSelector.collection, msg.sender, 0, bidSelector.traitKey, traitBid.amount
+            );
+        }
     }
 
-    /// @notice Accept a token bid by selling your NFT to the bidder
+    /// @notice Accept a token, collection, or trait bid by selling an NFT to the bidder
     /// @dev Frontrunning is prevented with `minAmount`
-    function acceptTokenBid(address collection, uint256 tokenId, address bidder, uint256 minAmount)
+    /// @param bidSelector The bid type, collection, fulfillment token id, and optional trait key
+    /// @param bidder The address that placed the bid
+    /// @param minAmount The minimum acceptable bid amount
+    function acceptBid(BidSelector calldata bidSelector, address bidder, uint256 minAmount)
         external
         nonReentrant
         whenNotPaused
@@ -371,175 +398,56 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         // checks
         _checkSanctionsList(msg.sender);
         _checkSanctionsList(bidder);
-        _checkCollectionOrTokenAllowed(collection, tokenId);
-        Bid memory bid = tokenBids[bidder][collection][tokenId];
+        Bid memory bid;
+        if (bidSelector.bidType == BidType.TOKEN) {
+            _checkCollectionOrTokenAllowed(bidSelector.collection, bidSelector.tokenId);
+            bid = tokenBids[bidder][bidSelector.collection][bidSelector.tokenId];
+        } else if (bidSelector.bidType == BidType.COLLECTION) {
+            _checkCollectionAllowed(bidSelector.collection);
+            bid = collectionBids[bidder][bidSelector.collection];
+        } else {
+            _checkCollectionAllowed(bidSelector.collection);
+            bid = traitBids[bidder][bidSelector.collection][bidSelector.traitKey];
+        }
         if (bid.amount == 0) revert NoBidExists();
         _checkBidNotExpired(bid.expiresAt);
         if (bid.amount < minAmount) revert BidTooLow();
+        if (bidSelector.bidType == BidType.TRAIT) {
+            if (!_validateTraitKey(bidSelector.traitKey, collectionTraitConfigs[bidSelector.collection])) {
+                revert InvalidTraitKey();
+            }
+            uint32 traits = tokenTraits[bidSelector.collection][bidSelector.tokenId];
+            if (!_matchesTraitBid(traits, bidSelector.traitKey)) revert TraitMismatch();
+        }
 
-        IERC721 nft = IERC721(collection);
-        if (nft.ownerOf(tokenId) != msg.sender) revert NotTokenOwner();
-        if (!_isApproved(nft, msg.sender, tokenId)) revert NotApproved();
+        IERC721 nft = IERC721(bidSelector.collection);
+        if (nft.ownerOf(bidSelector.tokenId) != msg.sender) revert NotTokenOwner();
+        if (!_isApproved(nft, msg.sender, bidSelector.tokenId)) revert NotApproved();
 
         // effects
-        delete tokenBids[bidder][collection][tokenId];
-        _clearListing(collection, tokenId); // avoids stale listing attack
+        if (bidSelector.bidType == BidType.TOKEN) {
+            delete tokenBids[bidder][bidSelector.collection][bidSelector.tokenId];
+        } else if (bidSelector.bidType == BidType.COLLECTION) {
+            delete collectionBids[bidder][bidSelector.collection];
+        } else {
+            delete traitBids[bidder][bidSelector.collection][bidSelector.traitKey];
+        }
+        _clearListing(bidSelector.collection, bidSelector.tokenId); // avoids stale listing attack
 
         // interactions
-        uint256 royalty = _settleSale(nft, collection, tokenId, msg.sender, bidder, bid.amount);
+        uint256 royalty = _settleSale(nft, bidSelector.collection, bidSelector.tokenId, msg.sender, bidder, bid.amount);
 
-        emit TokenBidAccepted(collection, tokenId, msg.sender, bidder, bid.amount, royalty);
-    }
-
-    /////////////////////////////////////////////////////////////////////
-    // COLLECTION BID FUNCTIONS
-    /////////////////////////////////////////////////////////////////////
-
-    /// @notice Place a standing bid for any NFT in a collection
-    /// @param collection The collection address
-    /// @param expiresAt Expiry timestamp (0 = no expiry)
-    function placeCollectionBid(address collection, uint64 expiresAt) external payable nonReentrant whenNotPaused {
-        // checks
-        _checkSanctionsList(msg.sender);
-        _checkCollectionAllowed(collection);
-        if (msg.value == 0) revert InvalidPrice();
-        if (collectionBids[msg.sender][collection].amount > 0) revert BidAlreadyExists(); // increase bid instead
-        if (expiresAt != 0 && expiresAt < block.timestamp) revert BidExpired();
-
-        // effects
-        collectionBids[msg.sender][collection] = Bid({amount: uint192(msg.value), expiresAt: expiresAt});
-
-        emit CollectionBidPlaced(collection, msg.sender, msg.value, expiresAt);
-    }
-
-    /// @notice Increase an existing collection bid
-    /// @dev Prevents increasing an expired bid
-    function increaseCollectionBid(address collection) external payable nonReentrant whenNotPaused {
-        // checks
-        _checkSanctionsList(msg.sender);
-        _checkCollectionAllowed(collection);
-        if (msg.value == 0) revert InvalidPrice();
-
-        Bid storage bid = collectionBids[msg.sender][collection];
-        if (bid.amount == 0) revert NoBidExists(); // create bid instead
-        _checkBidNotExpired(bid.expiresAt);
-
-        // effects
-        uint192 newAmount = bid.amount + uint192(msg.value);
-        bid.amount = newAmount;
-
-        emit CollectionBidIncreased(collection, msg.sender, newAmount);
-    }
-
-    /// @notice Accept a collection bid by selling your NFT to the bidder
-    /// @dev Frontrunning is prevented with `minAmount`
-    function acceptCollectionBid(address collection, uint256 tokenId, address bidder, uint256 minAmount)
-        external
-        nonReentrant
-        whenNotPaused
-    {
-        // checks
-        _checkSanctionsList(msg.sender);
-        _checkSanctionsList(bidder);
-        _checkCollectionAllowed(collection);
-        Bid memory bid = collectionBids[bidder][collection];
-        if (bid.amount == 0) revert NoBidExists();
-        _checkBidNotExpired(bid.expiresAt);
-        if (bid.amount < minAmount) revert BidTooLow();
-
-        IERC721 nft = IERC721(collection);
-        if (nft.ownerOf(tokenId) != msg.sender) revert NotTokenOwner();
-        if (!_isApproved(nft, msg.sender, tokenId)) revert NotApproved();
-
-        // effects
-        delete collectionBids[bidder][collection];
-        _clearListing(collection, tokenId); // avoids stale listing attack
-
-        // interactions
-        uint256 royalty = _settleSale(nft, collection, tokenId, msg.sender, bidder, bid.amount);
-
-        emit CollectionBidAccepted(collection, tokenId, msg.sender, bidder, bid.amount, royalty);
-    }
-
-    /////////////////////////////////////////////////////////////////////
-    // TRAIT BID FUNCTIONS
-    /////////////////////////////////////////////////////////////////////
-
-    /// @notice Place a bid matching tokens by trait
-    /// @param collection The collection address
-    /// @param traitKey Encoded traits filter
-    /// @param expiresAt Expiry timestamp (0 = no expiry)
-    function placeTraitBid(address collection, uint256 traitKey, uint64 expiresAt)
-        external
-        payable
-        nonReentrant
-        whenNotPaused
-    {
-        // checks
-        _checkSanctionsList(msg.sender);
-        _checkCollectionAllowed(collection);
-        if (msg.value == 0) revert InvalidPrice();
-        if (expiresAt != 0 && expiresAt < block.timestamp) revert BidExpired();
-        if (!_validateTraitKey(traitKey, collectionTraitConfigs[collection])) revert InvalidTraitKey();
-        if (traitBids[msg.sender][collection][traitKey].amount > 0) revert BidAlreadyExists(); // increase bid instead
-
-        // effects
-        traitBids[msg.sender][collection][traitKey] = Bid({amount: uint192(msg.value), expiresAt: expiresAt});
-
-        emit TraitBidPlaced(collection, traitKey, msg.sender, msg.value, expiresAt);
-    }
-
-    /// @notice Increase an existing trait bid
-    /// @dev Prevents increasing an expired bid
-    function increaseTraitBid(address collection, uint256 traitKey) external payable nonReentrant whenNotPaused {
-        // checks
-        _checkSanctionsList(msg.sender);
-        _checkCollectionAllowed(collection);
-        if (!_validateTraitKey(traitKey, collectionTraitConfigs[collection])) revert InvalidTraitKey();
-        if (msg.value == 0) revert InvalidPrice();
-
-        Bid storage bid = traitBids[msg.sender][collection][traitKey];
-        if (bid.amount == 0) revert NoBidExists(); // create bid instead
-        _checkBidNotExpired(bid.expiresAt);
-
-        // effects
-        uint192 newAmount = bid.amount + uint192(msg.value);
-        bid.amount = newAmount;
-
-        emit TraitBidIncreased(collection, traitKey, msg.sender, newAmount);
-    }
-
-    /// @notice Accept a trait bid by selling your NFT to the bidder
-    /// @dev Frontrunning is prevented with `minAmount`
-    function acceptTraitBid(address collection, uint256 tokenId, address bidder, uint256 traitKey, uint256 minAmount)
-        external
-        nonReentrant
-        whenNotPaused
-    {
-        // checks
-        _checkSanctionsList(msg.sender);
-        _checkSanctionsList(bidder);
-        _checkCollectionAllowed(collection);
-        Bid memory bid = traitBids[bidder][collection][traitKey];
-        if (bid.amount == 0) revert NoBidExists();
-        _checkBidNotExpired(bid.expiresAt);
-        if (bid.amount < minAmount) revert BidTooLow();
-        if (!_validateTraitKey(traitKey, collectionTraitConfigs[collection])) revert InvalidTraitKey();
-        uint32 traits = tokenTraits[collection][tokenId];
-        if (!_matchesTraitBid(traits, traitKey)) revert TraitMismatch();
-
-        IERC721 nft = IERC721(collection);
-        if (nft.ownerOf(tokenId) != msg.sender) revert NotTokenOwner();
-        if (!_isApproved(nft, msg.sender, tokenId)) revert NotApproved();
-
-        // effects
-        delete traitBids[bidder][collection][traitKey];
-        _clearListing(collection, tokenId); // avoids stale listing attack
-
-        // interactions
-        uint256 royalty = _settleSale(nft, collection, tokenId, msg.sender, bidder, bid.amount);
-
-        emit TraitBidAccepted(collection, tokenId, msg.sender, bidder, traitKey, bid.amount, royalty);
+        uint256 traitKey = bidSelector.bidType == BidType.TRAIT ? bidSelector.traitKey : 0;
+        emit BidAccepted(
+            bidSelector.bidType,
+            bidSelector.collection,
+            bidder,
+            bidSelector.tokenId,
+            traitKey,
+            msg.sender,
+            bid.amount,
+            royalty
+        );
     }
 
     /////////////////////////////////////////////////////////////////////
@@ -565,21 +473,21 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
                 Bid storage tokenBid = tokenBids[msg.sender][bs.collection][bs.tokenId];
                 if (tokenBid.amount == 0) revert NoBidExists();
                 tokenBid.expiresAt = expiresAt;
-                emit TokenBidExtended(bs.collection, bs.tokenId, msg.sender, expiresAt);
+                emit BidExtended(BidType.TOKEN, bs.collection, msg.sender, bs.tokenId, 0, expiresAt);
             } else if (bs.bidType == BidType.COLLECTION) {
                 // collection bid
                 _checkCollectionAllowed(bs.collection);
                 Bid storage collectionBid = collectionBids[msg.sender][bs.collection];
                 if (collectionBid.amount == 0) revert NoBidExists();
                 collectionBid.expiresAt = expiresAt;
-                emit CollectionBidExtended(bs.collection, msg.sender, expiresAt);
+                emit BidExtended(BidType.COLLECTION, bs.collection, msg.sender, 0, 0, expiresAt);
             } else {
                 // trait bid
                 _checkCollectionAllowed(bs.collection);
                 Bid storage traitBid = traitBids[msg.sender][bs.collection][bs.traitKey];
                 if (traitBid.amount == 0) revert NoBidExists();
                 traitBid.expiresAt = expiresAt;
-                emit TraitBidExtended(bs.collection, bs.traitKey, msg.sender, expiresAt);
+                emit BidExtended(BidType.TRAIT, bs.collection, msg.sender, 0, bs.traitKey, expiresAt);
             }
         }
     }
@@ -766,7 +674,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         }
     }
 
-    /// @dev Sends ETH, forwarding all gas, reverting upon failure
+    /// @dev Sends ETH, capping gas at 100_000 gas, reverting upon failure
     function _safeTransferEth(address to, uint256 amount) internal {
         (bool success,) = to.call{value: amount, gas: 1e5}("");
         if (!success) revert EthTransferFailed();
@@ -791,7 +699,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
 
         delete tokenBids[sender][collection][tokenId];
 
-        emit TokenBidCanceled(collection, tokenId, sender);
+        emit BidCanceled(BidType.TOKEN, collection, sender, tokenId, 0);
     }
 
     /// @dev Cancel a collection bid and withdraw funds
@@ -801,7 +709,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
 
         delete collectionBids[sender][collection];
 
-        emit CollectionBidCanceled(collection, sender);
+        emit BidCanceled(BidType.COLLECTION, collection, sender, 0, 0);
     }
 
     /// @dev Cancel a trait bid and withdraw funds
@@ -814,7 +722,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
 
         delete traitBids[sender][collection][traitKey];
 
-        emit TraitBidCanceled(collection, traitKey, sender);
+        emit BidCanceled(BidType.TRAIT, collection, sender, 0, traitKey);
     }
 
     /// @dev Settle a sale: calculate royalties, record sale, clear inquiries, transfer NFT and payments

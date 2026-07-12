@@ -32,6 +32,8 @@ There are three bid types. Each bid escrows ETH when placed and stores an amount
 
 A bidder can hold one stored bid per type per collection, token, or trait key as applicable. Expired bids still occupy their key until the bidder cancels them or extends them. Bids can be increased while unexpired, extended even after expiry, or canceled while expired. Increasing and extending require the marketplace to be unpaused and the relevant collection or token to be allowed.
 
+Bid placement, increases, and acceptance use a unified `BidSelector` API. The selector's `bidType` determines whether `tokenId` identifies a token bid, `collection` identifies a collection bid, or `traitKey` identifies a trait bid. When accepting any bid, `tokenId` identifies the NFT being sold. Each placement or increase funds exactly one bid; only extension and cancellation support batching. Bid lifecycle logs use the generic `BidPlaced`, `BidIncreased`, `BidExtended`, `BidCanceled`, and `BidAccepted` events, with `bidType`, `collection`, and `bidder` indexed.
+
 Bid acceptance includes a `minAmount` parameter to protect the seller from accepting less than expected if the bid changes before the seller's transaction executes. Accepted bids are deleted, and accepting any bid for a token clears that token's existing listing to avoid leaving a stale listing behind.
 
 Bid cancellation is available while the marketplace is paused or unpaused and does not require the collection to remain allowed. Cancellation is blocked while the bidder is sanctioned; once the bidder is no longer sanctioned, the bidder can cancel and withdraw escrowed ETH.
@@ -75,7 +77,7 @@ flowchart TD
     I -- No --> X
     I -- Yes --> J[Delete bid and clear listing]
     J --> K[Transfer NFT and pay royalty/seller]
-    K --> L[Emit TokenBidAccepted]
+    K --> L[Emit BidAccepted with TOKEN type]
 ```
 
 ### Collection Bid
@@ -90,7 +92,7 @@ flowchart TD
     E -- No --> X
     E -- Yes --> F[Delete bid and clear listing]
     F --> G[Transfer NFT and pay royalty/seller]
-    G --> H[Emit CollectionBidAccepted]
+    G --> H[Emit BidAccepted with COLLECTION type]
 ```
 
 ### Trait Bid
@@ -111,7 +113,7 @@ flowchart TD
     I -- No --> Z[Revert TraitMismatch]
     I -- Yes --> J[Delete bid and clear listing]
     J --> K[Transfer NFT and pay royalty/seller]
-    K --> L[Emit TraitBidAccepted]
+    K --> L[Emit BidAccepted with TRAIT type]
 ```
 
 ## Collection And Token Allowlisting
