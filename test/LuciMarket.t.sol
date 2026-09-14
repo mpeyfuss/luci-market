@@ -5,6 +5,7 @@ import {LuciMarket} from "../src/LuciMarket.sol";
 import {LuciRoyaltyModel} from "../src/LuciRoyaltyModel.sol";
 import {LuciTestBase} from "./LuciTestBase.sol";
 import {MockERC721, MockRoyaltyModel} from "./mocks/MarketplaceMocks.sol";
+import {Math} from "@openzeppelin-contracts-5.6.1/utils/math/Math.sol";
 import {IERC721Errors} from "@openzeppelin-contracts-5.6.1/interfaces/draft-IERC6093.sol";
 
 contract LuciMarketTest is LuciTestBase {
@@ -107,66 +108,108 @@ contract LuciMarketTest is LuciTestBase {
         uint64 expiresAt = _expires(1 days);
 
         vm.expectEmit(true, true, true, true, address(market));
-        emit LuciMarket.Listed(address(nft), TOKEN_ID, seller, PRICE, expiresAt, address(0), 1 ether);
+        emit LuciMarket.Listed(address(nft), TOKEN_ID, seller, PRICE, expiresAt, address(0));
         vm.prank(seller);
         market.list(address(nft), TOKEN_ID, PRICE, expiresAt, address(0));
 
-        (
-            address listingSeller,
-            uint64 listingExpiresAt,
-            uint256 listingPrice,
-            uint256 royaltyAmount,
-            address listingBuyer
-        ) = market.listings(address(nft), TOKEN_ID);
+        (address listingSeller, uint64 listingExpiresAt, uint256 listingPrice, address listingBuyer) =
+            market.listings(address(nft), TOKEN_ID);
         assertEq(listingSeller, seller);
         assertEq(listingExpiresAt, expiresAt);
         assertEq(listingPrice, PRICE);
         assertEq(listingBuyer, address(0));
-        assertEq(royaltyAmount, 1 ether);
     }
 
     function test_listPrivateBuyerStoresListingAndEmits() public {
         uint64 expiresAt = _expires(1 days);
 
         vm.expectEmit(true, true, true, true, address(market));
-        emit LuciMarket.Listed(address(nft), TOKEN_ID, seller, PRICE, expiresAt, owner, 1 ether);
+        emit LuciMarket.Listed(address(nft), TOKEN_ID, seller, PRICE, expiresAt, owner);
         vm.prank(seller);
         market.list(address(nft), TOKEN_ID, PRICE, expiresAt, owner);
 
-        (
-            address listingSeller,
-            uint64 listingExpiresAt,
-            uint256 listingPrice,
-            uint256 royaltyAmount,
-            address listingBuyer
-        ) = market.listings(address(nft), TOKEN_ID);
+        (address listingSeller, uint64 listingExpiresAt, uint256 listingPrice, address listingBuyer) =
+            market.listings(address(nft), TOKEN_ID);
         assertEq(listingSeller, seller);
         assertEq(listingExpiresAt, expiresAt);
         assertEq(listingPrice, PRICE);
         assertEq(listingBuyer, owner);
-        assertEq(royaltyAmount, 1 ether);
     }
 
-    function test_relistingRefreshesRoyaltyAmount() public {
+    function test_royaltyIsResolvedAtBuyTime() public {
         _list(TOKEN_ID, PRICE, address(0));
 
+        // mint price raised to the sale price after listing -> royalty must be zero at settlement
+        uint192 newMintPriceUsd = uint192(_toUsd(PRICE));
         vm.prank(owner);
-        royaltyModel.configureCollection(address(nft), uint192(PRICE));
+        royaltyModel.configureCollection(address(nft), newMintPriceUsd);
 
-        _list(TOKEN_ID, PRICE, address(0));
+        uint256 sellerBalanceBefore = seller.balance;
+        uint256 recipientBalanceBefore = royaltyRecipient.balance;
 
-        (,,, uint256 royaltyAmount,) = market.listings(address(nft), TOKEN_ID);
-        assertEq(royaltyAmount, 0);
+        vm.expectEmit(true, true, true, true, address(market));
+        emit LuciMarket.Sold(address(nft), TOKEN_ID, buyer, seller, PRICE, 0);
+        vm.prank(buyer);
+        market.buy{value: PRICE}(address(nft), TOKEN_ID);
+
+        assertEq(seller.balance - sellerBalanceBefore, PRICE);
+        assertEq(royaltyRecipient.balance, recipientBalanceBefore); // 0 ETH
     }
 
-    function test_listRevertsWhenRoyaltyExceedsPrice() public {
-        MockRoyaltyModel excessiveRoyaltyModel = new MockRoyaltyModel(royaltyRecipient, PRICE + 1);
+    function test_buyUsesLiveEthPrice() public {
+        _list(TOKEN_ID, PRICE, address(0));
+
+        // at $2,000/ETH a 10 ETH sale is $20,000 vs a $10,000 mint -> full 10%
+        // halving the ETH price makes the same sale $10,000, exactly the mint price -> 0%
+        _setEthUsdPrice(ETH_USD_PRICE / 2);
+
+        uint256 recipientBalanceBefore = royaltyRecipient.balance;
+
+        vm.prank(buyer);
+        market.buy{value: PRICE}(address(nft), TOKEN_ID);
+
+        assertEq(royaltyRecipient.balance, recipientBalanceBefore);
+    }
+
+    function test_buyRevertsWhenRoyaltyExceedsCap() public {
+        _list(TOKEN_ID, PRICE, address(0));
+
+        uint256 cap = Math.mulDiv(PRICE, market.MAX_ROYALTY_BPS(), market.BASIS());
+        MockRoyaltyModel excessiveRoyaltyModel = new MockRoyaltyModel(royaltyRecipient, cap + 1);
         vm.prank(owner);
         market.setRoyaltyModel(address(excessiveRoyaltyModel));
 
         vm.expectRevert(LuciMarket.InvalidRoyaltyAmount.selector);
-        vm.prank(seller);
-        market.list(address(nft), TOKEN_ID, PRICE, _expires(1 days), address(0));
+        vm.prank(buyer);
+        market.buy{value: PRICE}(address(nft), TOKEN_ID);
+
+        // exactly at the cap is allowed
+        excessiveRoyaltyModel.setAmount(cap);
+        vm.prank(buyer);
+        market.buy{value: PRICE}(address(nft), TOKEN_ID);
+
+        assertEq(royaltyRecipient.balance, cap);
+    }
+
+    function testFuzz_royaltyNeverExceedsMarketCap(uint256 royaltyAmount) public {
+        uint256 cap = Math.mulDiv(PRICE, market.MAX_ROYALTY_BPS(), market.BASIS());
+        royaltyAmount = bound(royaltyAmount, 0, PRICE);
+
+        MockRoyaltyModel mockModel = new MockRoyaltyModel(royaltyRecipient, royaltyAmount);
+        vm.prank(owner);
+        market.setRoyaltyModel(address(mockModel));
+
+        _list(TOKEN_ID, PRICE, address(0));
+
+        if (royaltyAmount > cap) {
+            vm.expectRevert(LuciMarket.InvalidRoyaltyAmount.selector);
+            vm.prank(buyer);
+            market.buy{value: PRICE}(address(nft), TOKEN_ID);
+        } else {
+            vm.prank(buyer);
+            market.buy{value: PRICE}(address(nft), TOKEN_ID);
+            assertLe(royaltyRecipient.balance, cap);
+        }
     }
 
     function test_listRevertsForInvalidInputs() public {
@@ -213,18 +256,13 @@ contract LuciMarketTest is LuciTestBase {
         tokens[1] = LuciMarket.Token({collection: address(nft), tokenId: TOKEN_ID_TWO});
         uint64 newExpiry = _expires(1 days);
 
-        vm.prank(owner);
-        royaltyModel.configureCollection(address(nft), uint192(PRICE));
-
         vm.prank(seller);
         market.extendListings(tokens, newExpiry);
 
-        (, uint64 firstExpiry,, uint256 firstRoyalty,) = market.listings(address(nft), TOKEN_ID);
-        (, uint64 secondExpiry,, uint256 secondRoyalty,) = market.listings(address(nft), TOKEN_ID_TWO);
+        (, uint64 firstExpiry,,) = market.listings(address(nft), TOKEN_ID);
+        (, uint64 secondExpiry,,) = market.listings(address(nft), TOKEN_ID_TWO);
         assertEq(firstExpiry, newExpiry);
         assertEq(secondExpiry, newExpiry);
-        assertEq(firstRoyalty, 1 ether);
-        assertEq(secondRoyalty, 1.1 ether);
     }
 
     function test_extendListingsRevertsForEmptyArrayOrNonSeller() public {
@@ -270,7 +308,7 @@ contract LuciMarketTest is LuciTestBase {
         vm.prank(seller);
         market.delist(tokens);
 
-        (address listingSeller,,,,) = market.listings(address(nft), TOKEN_ID);
+        (address listingSeller,,,) = market.listings(address(nft), TOKEN_ID);
         assertEq(listingSeller, address(0));
     }
 
@@ -320,7 +358,7 @@ contract LuciMarketTest is LuciTestBase {
         vm.prank(buyer);
         market.buy{value: PRICE}(address(nft), TOKEN_ID_TWO);
 
-        (address listingSeller,,,,) = market.listings(address(nft), TOKEN_ID_TWO);
+        (address listingSeller,,,) = market.listings(address(nft), TOKEN_ID_TWO);
         assertEq(listingSeller, seller);
         assertEq(buyer.balance, buyerBalanceBefore);
     }
@@ -471,7 +509,7 @@ contract LuciMarketTest is LuciTestBase {
         market.acceptBid(_tokenBid(TOKEN_ID), bidder, 0);
 
         (uint192 tokenBidAmount,) = market.tokenBids(bidder, address(nft), TOKEN_ID);
-        (address listingSeller,,,,) = market.listings(address(nft), TOKEN_ID);
+        (address listingSeller,,,) = market.listings(address(nft), TOKEN_ID);
         assertEq(tokenBidAmount, 1 ether);
         assertEq(listingSeller, seller);
         assertEq(address(market).balance, 1 ether);
@@ -486,7 +524,7 @@ contract LuciMarketTest is LuciTestBase {
         market.acceptBid(_tokenBid(TOKEN_ID), bidder, 0);
 
         (tokenBidAmount,) = market.tokenBids(bidder, address(nft), TOKEN_ID);
-        (listingSeller,,,,) = market.listings(address(nft), TOKEN_ID);
+        (listingSeller,,,) = market.listings(address(nft), TOKEN_ID);
         assertEq(tokenBidAmount, 1 ether);
         assertEq(listingSeller, seller);
         assertEq(address(market).balance, 1 ether);
@@ -500,11 +538,12 @@ contract LuciMarketTest is LuciTestBase {
         market.acceptBid(_tokenBid(TOKEN_ID), bidder, 0);
     }
 
-    function test_acceptBidRevertsWhenRoyaltyExceedsPriceAndPreservesState() public {
+    function test_acceptBidRevertsWhenRoyaltyExceedsCapAndPreservesState() public {
         uint256 bidAmount = 1 ether;
         _placeTokenBid(TOKEN_ID, bidAmount);
 
-        MockRoyaltyModel excessiveRoyaltyModel = new MockRoyaltyModel(royaltyRecipient, bidAmount + 1);
+        uint256 cap = Math.mulDiv(bidAmount, market.MAX_ROYALTY_BPS(), market.BASIS());
+        MockRoyaltyModel excessiveRoyaltyModel = new MockRoyaltyModel(royaltyRecipient, cap + 1);
         vm.prank(owner);
         market.setRoyaltyModel(address(excessiveRoyaltyModel));
 
@@ -583,7 +622,7 @@ contract LuciMarketTest is LuciTestBase {
         market.acceptBid(_collectionBid(TOKEN_ID), bidder, 0);
 
         (uint192 collectionBidAmount,) = market.collectionBids(bidder, address(nft));
-        (address listingSeller,,,,) = market.listings(address(nft), TOKEN_ID);
+        (address listingSeller,,,) = market.listings(address(nft), TOKEN_ID);
         assertEq(collectionBidAmount, 1 ether);
         assertEq(listingSeller, seller);
         assertEq(address(market).balance, 1 ether);
@@ -598,7 +637,7 @@ contract LuciMarketTest is LuciTestBase {
         market.acceptBid(_collectionBid(TOKEN_ID), bidder, 0);
 
         (collectionBidAmount,) = market.collectionBids(bidder, address(nft));
-        (listingSeller,,,,) = market.listings(address(nft), TOKEN_ID);
+        (listingSeller,,,) = market.listings(address(nft), TOKEN_ID);
         assertEq(collectionBidAmount, 1 ether);
         assertEq(listingSeller, seller);
         assertEq(address(market).balance, 1 ether);
@@ -718,7 +757,7 @@ contract LuciMarketTest is LuciTestBase {
         market.acceptBid(_traitBid(TOKEN_ID, traitKey), bidder, 0);
 
         (uint192 traitBidAmount,) = market.traitBids(bidder, address(nft), traitKey);
-        (address listingSeller,,,,) = market.listings(address(nft), TOKEN_ID);
+        (address listingSeller,,,) = market.listings(address(nft), TOKEN_ID);
         assertEq(traitBidAmount, 1 ether);
         assertEq(listingSeller, seller);
         assertEq(address(market).balance, 1 ether);
@@ -733,7 +772,7 @@ contract LuciMarketTest is LuciTestBase {
         market.acceptBid(_traitBid(TOKEN_ID, traitKey), bidder, 0);
 
         (traitBidAmount,) = market.traitBids(bidder, address(nft), traitKey);
-        (listingSeller,,,,) = market.listings(address(nft), TOKEN_ID);
+        (listingSeller,,,) = market.listings(address(nft), TOKEN_ID);
         assertEq(traitBidAmount, 1 ether);
         assertEq(listingSeller, seller);
         assertEq(address(market).balance, 1 ether);
@@ -964,7 +1003,7 @@ contract LuciMarketTest is LuciTestBase {
         vm.prank(seller);
         market.delist(tokens);
 
-        (address listingSeller,,,,) = market.listings(address(nft), TOKEN_ID);
+        (address listingSeller,,,) = market.listings(address(nft), TOKEN_ID);
         assertEq(listingSeller, address(0));
 
         sanctions.setSanctioned(seller, false);

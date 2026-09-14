@@ -4,6 +4,7 @@ pragma solidity 0.8.30;
 import {Ownable2Step, Ownable} from "@openzeppelin-contracts-5.6.1/access/Ownable2Step.sol";
 import {ReentrancyGuardTransient} from "@openzeppelin-contracts-5.6.1/utils/ReentrancyGuardTransient.sol";
 import {IERC721} from "@openzeppelin-contracts-5.6.1/token/ERC721/IERC721.sol";
+import {Math} from "@openzeppelin-contracts-5.6.1/utils/math/Math.sol";
 import {LibMap} from "solady-0.1.26/utils/LibMap.sol";
 import {LuciRoyaltyModel} from "./LuciRoyaltyModel.sol";
 import {ISanctionsList} from "./interfaces/ISanctionsList.sol";
@@ -25,8 +26,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         address seller; // slot 0 (20 bytes)
         uint64 expiresAt; // slot 0 (8 bytes)
         uint256 price; // slot 1 (32 bytes)
-        uint256 royaltyAmount; // slot 2 (32 bytes)
-        address buyer; // slot 3 (20 bytes) - address(0) means anyone can buy
+        address buyer; // slot 2 (20 bytes) - address(0) means anyone can buy
     }
 
     struct Bid {
@@ -58,6 +58,15 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
 
     /// @notice Maximum listing duration to help avoid the stale listing attack vector
     uint256 public constant MAX_LISTING_DURATION = 180 days;
+
+    /// @notice Basis points denominator
+    uint256 public constant BASIS = 10_000;
+
+    /// @notice Hard ceiling on royalties, enforced on every settlement regardless of the configured royalty model
+    uint256 public constant MAX_ROYALTY_BPS = 1_000; // 10%
+
+    /// @notice Sale currency passed to the royalty model - this marketplace settles in native ETH only
+    address public constant NATIVE_CURRENCY = address(0);
 
     /// @notice Whether the marketplace is paused
     bool public paused;
@@ -102,8 +111,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         address indexed seller,
         uint256 price,
         uint64 expiresAt,
-        address buyer,
-        uint256 royaltyAmount
+        address buyer
     );
     event Delisted(address indexed collection, uint256 indexed tokenId, address indexed seller);
     event Sold(
@@ -236,15 +244,10 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         if (nft.ownerOf(tokenId) != msg.sender) revert NotTokenOwner();
         if (!_isApproved(nft, msg.sender, tokenId)) revert NotApproved();
 
-        (, uint256 royaltyAmount) = _getRoyaltyInfo(collection, tokenId, price);
-        if (royaltyAmount > price) revert InvalidRoyaltyAmount();
-
         // effects
-        listings[collection][tokenId] = Listing({
-            seller: msg.sender, expiresAt: expiresAt, price: price, royaltyAmount: royaltyAmount, buyer: buyer
-        });
+        listings[collection][tokenId] = Listing({seller: msg.sender, expiresAt: expiresAt, price: price, buyer: buyer});
 
-        emit Listed(collection, tokenId, msg.sender, price, expiresAt, buyer, royaltyAmount);
+        emit Listed(collection, tokenId, msg.sender, price, expiresAt, buyer);
     }
 
     /// @notice Extend listing(s)
@@ -268,15 +271,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
 
             listing.expiresAt = expiresAt;
 
-            emit Listed(
-                token.collection,
-                token.tokenId,
-                msg.sender,
-                listing.price,
-                expiresAt,
-                listing.buyer,
-                listing.royaltyAmount
-            );
+            emit Listed(token.collection, token.tokenId, msg.sender, listing.price, expiresAt, listing.buyer);
         }
     }
 
@@ -312,10 +307,10 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         delete listings[collection][tokenId];
 
         // interactions
-        (address royaltyRecipient,) = _getRoyaltyInfo(collection, tokenId, listing.price);
-        _settleSale(nft, tokenId, listing.seller, msg.sender, listing.price, royaltyRecipient, listing.royaltyAmount);
+        (address royaltyRecipient, uint256 royaltyAmount) = _getRoyaltyInfo(collection, tokenId, listing.price);
+        _settleSale(nft, tokenId, listing.seller, msg.sender, listing.price, royaltyRecipient, royaltyAmount);
 
-        emit Sold(collection, tokenId, msg.sender, listing.seller, listing.price, listing.royaltyAmount);
+        emit Sold(collection, tokenId, msg.sender, listing.seller, listing.price, royaltyAmount);
     }
 
     /////////////////////////////////////////////////////////////////////
@@ -758,7 +753,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         view
         returns (address recipient, uint256 royaltyAmount)
     {
-        return LuciRoyaltyModel(royaltyModel).calculateRoyalty(collection, tokenId, salePrice);
+        return LuciRoyaltyModel(royaltyModel).calculateRoyalty(collection, tokenId, salePrice, NATIVE_CURRENCY);
     }
 
     /// @dev Settle a sale using royalty information resolved by the caller
@@ -772,7 +767,9 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         address royaltyRecipient,
         uint256 royaltyAmount
     ) internal {
-        if (royaltyAmount > salePrice) revert InvalidRoyaltyAmount();
+        if (royaltyAmount > Math.mulDiv(salePrice, MAX_ROYALTY_BPS, BASIS)) {
+            revert InvalidRoyaltyAmount();
+        }
         uint256 sellerProceeds = salePrice - royaltyAmount;
 
         if (royaltyAmount > 0) {

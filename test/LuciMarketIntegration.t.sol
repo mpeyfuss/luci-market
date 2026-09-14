@@ -22,7 +22,7 @@ contract LuciMarketIntegrationTest is LuciTestBase {
         assertEq(royaltyRecipient.balance, recipientBefore + 1 ether);
         assertEq(address(market).balance, 0);
 
-        (address listingSeller,,,,) = market.listings(address(nft), TOKEN_ID);
+        (address listingSeller,,,) = market.listings(address(nft), TOKEN_ID);
         assertEq(listingSeller, address(0));
     }
 
@@ -39,22 +39,24 @@ contract LuciMarketIntegrationTest is LuciTestBase {
         assertEq(nft.ownerOf(TOKEN_ID), buyer);
     }
 
-    function test_buyUsesSnapshottedRoyaltyAmountAfterConfigurationChanges() public {
+    function test_buyUsesLiveRoyaltyAmountAfterConfigurationChanges() public {
         _list(TOKEN_ID, PRICE, address(0));
         uint256 sellerBefore = seller.balance;
         uint256 recipientBefore = royaltyRecipient.balance;
 
+        // raising the mint price to the sale price after listing drops the royalty to zero at settlement
+        uint192 newMintPriceUsd = uint192(_toUsd(PRICE));
         vm.prank(owner);
-        royaltyModel.configureCollection(address(nft), uint192(PRICE));
+        royaltyModel.configureCollection(address(nft), newMintPriceUsd);
 
         vm.prank(buyer);
         market.buy{value: PRICE}(address(nft), TOKEN_ID);
 
-        assertEq(seller.balance, sellerBefore + 9 ether);
-        assertEq(royaltyRecipient.balance, recipientBefore + 1 ether);
+        assertEq(seller.balance, sellerBefore + PRICE);
+        assertEq(royaltyRecipient.balance, recipientBefore);
     }
 
-    function test_buyUsesCurrentRoyaltyRecipientWithSnapshottedAmount() public {
+    function test_buyUsesCurrentRoyaltyRecipientWithLiveAmount() public {
         _list(TOKEN_ID, PRICE, address(0));
         address newRecipient = makeAddr("newRecipient");
 
@@ -68,7 +70,8 @@ contract LuciMarketIntegrationTest is LuciTestBase {
         assertEq(royaltyRecipient.balance, 0);
     }
 
-    function test_buyUsesReplacementModelRecipientWithSnapshottedAmount() public {
+    /// @dev The replacement model has no collection or currency configured, so it falls back to the max royalty
+    function test_buyUsesReplacementModelRecipientWithLiveAmount() public {
         _list(TOKEN_ID, PRICE, address(0));
         address newRecipient = makeAddr("replacementRecipient");
         LuciRoyaltyModel replacementModel = new LuciRoyaltyModel(owner, newRecipient);
@@ -99,7 +102,7 @@ contract LuciMarketIntegrationTest is LuciTestBase {
         assertEq(royaltyRecipient.balance, recipientBefore);
         assertEq(address(market).balance, 0);
 
-        (address listingSeller,,,,) = market.listings(address(nft), TOKEN_ID);
+        (address listingSeller,,,) = market.listings(address(nft), TOKEN_ID);
         assertEq(listingSeller, seller);
     }
 
@@ -150,7 +153,7 @@ contract LuciMarketIntegrationTest is LuciTestBase {
         assertEq(address(market).balance, 0);
 
         (uint192 bidAmount,) = market.tokenBids(bidder, address(nft), TOKEN_ID);
-        (address listingSeller,,,,) = market.listings(address(nft), TOKEN_ID);
+        (address listingSeller,,,) = market.listings(address(nft), TOKEN_ID);
         assertEq(bidAmount, 0);
         assertEq(listingSeller, address(0));
     }
@@ -313,7 +316,7 @@ contract LuciMarketIntegrationTest is LuciTestBase {
         market.buy{value: PRICE}(address(nft), TOKEN_ID);
 
         assertEq(nft.ownerOf(TOKEN_ID), buyer);
-        (address listingSeller,,,,) = market.listings(address(nft), TOKEN_ID);
+        (address listingSeller,,,) = market.listings(address(nft), TOKEN_ID);
         assertEq(listingSeller, address(0));
     }
 
@@ -517,7 +520,7 @@ contract LuciMarketIntegrationTest is LuciTestBase {
         market.buy{value: PRICE}(address(nft), 99);
 
         assertEq(nft.ownerOf(99), address(rejectingSeller));
-        (address listingSeller,,,,) = market.listings(address(nft), 99);
+        (address listingSeller,,,) = market.listings(address(nft), 99);
         assertEq(listingSeller, address(rejectingSeller));
     }
 
@@ -532,7 +535,7 @@ contract LuciMarketIntegrationTest is LuciTestBase {
         market.buy{value: PRICE}(address(nft), TOKEN_ID);
 
         assertEq(nft.ownerOf(TOKEN_ID), seller);
-        (address listingSeller,,,,) = market.listings(address(nft), TOKEN_ID);
+        (address listingSeller,,,) = market.listings(address(nft), TOKEN_ID);
         assertEq(listingSeller, seller);
     }
 

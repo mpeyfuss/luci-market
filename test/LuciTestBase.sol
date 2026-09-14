@@ -3,9 +3,10 @@ pragma solidity 0.8.30;
 
 import {Test} from "forge-std-1.14.0/Test.sol";
 import {Ownable} from "@openzeppelin-contracts-5.6.1/access/Ownable.sol";
+import {Math} from "@openzeppelin-contracts-5.6.1/utils/math/Math.sol";
 import {LuciMarket} from "../src/LuciMarket.sol";
 import {LuciRoyaltyModel} from "../src/LuciRoyaltyModel.sol";
-import {MockERC721, MockSanctionsList} from "./mocks/MarketplaceMocks.sol";
+import {MockAggregatorV3, MockERC721, MockSanctionsList} from "./mocks/MarketplaceMocks.sol";
 
 abstract contract LuciTestBase is Test {
     address internal owner = makeAddr("owner");
@@ -18,14 +19,24 @@ abstract contract LuciTestBase is Test {
     uint256 internal constant TOKEN_ID = 1;
     uint256 internal constant TOKEN_ID_TWO = 2;
     uint256 internal constant PRICE = 10 ether;
-    uint192 internal constant MINT_PRICE = 5 ether;
+
+    /// @dev ETH/USD feed setup: $2,000 per ETH at 8 decimals
+    uint8 internal constant FEED_DECIMALS = 8;
+    int256 internal constant ETH_USD_PRICE = 2_000e8;
+    uint32 internal constant FEED_MAX_AGE = 1 hours;
+
+    /// @dev 5 ETH at $2,000/ETH = $10,000, stored with 8 decimals
+    uint256 internal constant MINT_PRICE = 5 ether;
+    uint192 internal constant MINT_PRICE_USD = 10_000e8;
 
     LuciRoyaltyModel internal royaltyModel;
     LuciMarket internal market;
     MockERC721 internal nft;
     MockSanctionsList internal sanctions;
+    MockAggregatorV3 internal ethUsdFeed;
 
     function setUp() public virtual {
+        ethUsdFeed = new MockAggregatorV3(FEED_DECIMALS, ETH_USD_PRICE);
         royaltyModel = new LuciRoyaltyModel(owner, royaltyRecipient);
         market = new LuciMarket(owner, address(royaltyModel), address(0));
         nft = new MockERC721();
@@ -35,7 +46,10 @@ abstract contract LuciTestBase is Test {
         market.addCollection(address(nft));
 
         vm.prank(owner);
-        royaltyModel.configureCollection(address(nft), MINT_PRICE);
+        royaltyModel.configureCurrency(address(0), address(ethUsdFeed), 18, FEED_MAX_AGE);
+
+        vm.prank(owner);
+        royaltyModel.configureCollection(address(nft), MINT_PRICE_USD);
 
         nft.mint(seller, TOKEN_ID);
         nft.mint(seller, TOKEN_ID_TWO);
@@ -119,5 +133,15 @@ abstract contract LuciTestBase is Test {
 
     function _expectRevert(bytes4 selector) internal {
         vm.expectRevert(selector);
+    }
+
+    /// @dev Reprices the ETH/USD feed and refreshes its `updatedAt`
+    function _setEthUsdPrice(int256 price) internal {
+        ethUsdFeed.setAnswer(price);
+    }
+
+    /// @dev Converts an ETH amount into USD with 8 decimals at the feed's current answer
+    function _toUsd(uint256 ethAmount) internal view returns (uint256) {
+        return Math.mulDiv(ethAmount, uint256(ethUsdFeed.answer()) * 1e8, 1e18 * 10 ** FEED_DECIMALS);
     }
 }

@@ -6,6 +6,7 @@ import {IERC721} from "@openzeppelin-contracts-5.6.1/token/ERC721/IERC721.sol";
 import {IERC721Receiver} from "@openzeppelin-contracts-5.6.1/token/ERC721/IERC721Receiver.sol";
 import {LuciMarket} from "../../src/LuciMarket.sol";
 import {ISanctionsList} from "../../src/interfaces/ISanctionsList.sol";
+import {IAggregatorV3} from "../../src/interfaces/IAggregatorV3.sol";
 
 contract MockERC721 is ERC721 {
     constructor() ERC721("Mock NFT", "MNFT") {}
@@ -36,12 +37,56 @@ contract MockRoyaltyModel {
         amount = amount_;
     }
 
-    function calculateRoyalty(address, uint256, uint256)
+    function setAmount(uint256 amount_) external {
+        amount = amount_;
+    }
+
+    function calculateRoyalty(address, uint256, uint256, address)
         external
         view
         returns (address royaltyRecipient, uint256 royaltyAmount)
     {
         return (recipient, amount);
+    }
+}
+
+contract MockAggregatorV3 is IAggregatorV3 {
+    uint8 public decimals;
+    int256 public answer;
+    uint256 public updatedAt;
+    bool public shouldRevert;
+
+    error MockAggregatorRevert();
+
+    constructor(uint8 decimals_, int256 answer_) {
+        decimals = decimals_;
+        answer = answer_;
+        updatedAt = block.timestamp;
+    }
+
+    function setAnswer(int256 answer_) external {
+        answer = answer_;
+        updatedAt = block.timestamp;
+    }
+
+    function setUpdatedAt(uint256 updatedAt_) external {
+        updatedAt = updatedAt_;
+    }
+
+    function setShouldRevert(bool shouldRevert_) external {
+        shouldRevert = shouldRevert_;
+    }
+
+    function latestRoundData()
+        external
+        view
+        override
+        returns (uint80 roundId, int256 answer_, uint256 startedAt, uint256 updatedAt_, uint80 answeredInRound)
+    {
+        if (shouldRevert) {
+            revert MockAggregatorRevert();
+        }
+        return (1, answer, updatedAt, updatedAt, 1);
     }
 }
 
