@@ -499,6 +499,12 @@ contract LuciMarketIntegrationTest is LuciTestBase {
         vm.prank(seller);
         market.acceptBid(_traitBid(TOKEN_ID, traitKey), bidder, PRICE);
 
+        LuciMarket.BidSelector[] memory selectors = new LuciMarket.BidSelector[](1);
+        selectors[0] = _traitBid(0, traitKey);
+        vm.expectRevert(LuciMarket.InvalidTraitKey.selector);
+        vm.prank(bidder);
+        market.extendBids(selectors, _expires(2 days));
+
         vm.prank(owner);
         market.setCollectionTraitsConfig(address(nft), _traitConfig(0));
 
@@ -604,6 +610,10 @@ contract TokenBidEscrowHandler {
     function increase(uint96 amount) external {
         if (activeAmount == 0) return;
         amount = uint96(_bound(amount, 1, 100 ether));
+        if (amount > address(this).balance) return;
+
+        (, uint64 expiresAt) = market.tokenBids(address(this), collection, tokenId);
+        if (expiresAt != 0 && block.timestamp > expiresAt) return;
 
         market.increaseBid{value: amount}(
             LuciMarket.BidSelector({

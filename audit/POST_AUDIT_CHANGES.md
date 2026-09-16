@@ -53,10 +53,12 @@ change to the contract's trust assumptions.
   intended behavior: availability is preferred over precision, and the fallback never under-charges.
 - The oracle call is wrapped in `try/catch`. `catch` covers a revert from the call itself, not a failure
   decoding its return data. A non-contract oracle is rejected at configuration time, where
-  `configureCurrency` calls `decimals()` on it.
-- `MAX_CURRENCY_DECIMALS` (36) bounds the conversion denominator below the `uint256` overflow limit. The
-  bound is enforced at configuration time because the multiplication sits inside the `try` block's success
-  body, which `catch` does not cover.
+  `configureCurrency` calls `decimals()` on it. Conversion re-reads `decimals()` live. An `answer` that
+  would overflow `answer * 10**USD_DECIMALS` is treated as a failed conversion (max royalty) rather than
+  reverting settlement.
+- `MAX_CURRENCY_DECIMALS` (18) matches real currencies and Chainlink feeds. The bound is enforced at
+  configuration time for the currency and the feed, and again at conversion time on the live `decimals()`
+  read.
 
 ### Reversal of an audited design decision
 
@@ -81,16 +83,15 @@ Nothing is deployed and the contracts are not upgradeable, so the storage layout
 ### New admin surface
 
 `configureCurrency` and `removeCurrency` on `LuciRoyaltyModel`, with the `currencies` registry (allowed flag,
-currency decimals, cached oracle decimals, staleness window, oracle address). This widens what a compromised
-royalty-model owner key can do: previously an arbitrary mint price or recipient, now also an arbitrary price
-source.
+currency decimals, staleness window, oracle address). This widens what a compromised royalty-model owner key
+can do: previously an arbitrary mint price or recipient, now also an arbitrary price source.
 
 ### New safety bound
 
 `LuciMarket` enforces `royaltyAmount <= 10%` of the sale price in `_settleSale`, replacing the audited
-`royaltyAmount > salePrice` check. It covers both `buy()` and `acceptBid()` and holds regardless of which
-royalty model the owner configures, bounding both the widened owner surface above and any future
-`setRoyaltyModel` swap.
+`royaltyAmount > salePrice` check. It also rejects a zero royalty recipient when the royalty amount is
+positive. Both checks cover `buy()` and `acceptBid()` and hold regardless of which royalty model the owner
+configures, bounding both the widened owner surface above and any future `setRoyaltyModel` swap.
 
 `list()` performs no royalty check, because it no longer calls the royalty model.
 

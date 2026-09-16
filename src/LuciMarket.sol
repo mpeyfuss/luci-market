@@ -470,6 +470,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
     /// @notice Extend bid(s)
     /// @dev Allows extending expired bids rather than canceling and re-bidding
     /// @dev All bids share the same `expiresAt` for simplicity
+    /// @dev Trait bids re-validate the trait key against the current collection config, matching place/increase/accept
     function extendBids(BidSelector[] calldata bidSelectors, uint64 expiresAt) external nonReentrant whenNotPaused {
         // checks
         _checkSanctionsList(msg.sender);
@@ -497,6 +498,9 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
             } else {
                 // trait bid
                 _checkCollectionAllowed(bs.collection);
+                if (!_validateTraitKey(bs.traitKey, collectionTraitConfigs[bs.collection])) {
+                    revert InvalidTraitKey();
+                }
                 Bid storage traitBid = traitBids[msg.sender][bs.collection][bs.traitKey];
                 if (traitBid.amount == 0) revert NoBidExists();
                 traitBid.expiresAt = expiresAt;
@@ -756,7 +760,8 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         return LuciRoyaltyModel(royaltyModel).calculateRoyalty(collection, tokenId, salePrice, NATIVE_CURRENCY);
     }
 
-    /// @dev Settle a sale using royalty information resolved by the caller
+    /// @dev Settle a sale using royalty information resolved by the caller.
+    ///      Caps royalty at 10% and rejects a zero recipient when the royalty amount is positive.
     ///      Uses `transferFrom` as a contract purchasing should be able to receive ERC-721 tokens and the liability falls on the buyer.
     function _settleSale(
         IERC721 nft,
@@ -770,6 +775,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         if (royaltyAmount > Math.mulDiv(salePrice, MAX_ROYALTY_BPS, BASIS)) {
             revert InvalidRoyaltyAmount();
         }
+        if (royaltyAmount > 0 && royaltyRecipient == address(0)) revert ZeroAddress();
         uint256 sellerProceeds = salePrice - royaltyAmount;
 
         if (royaltyAmount > 0) {

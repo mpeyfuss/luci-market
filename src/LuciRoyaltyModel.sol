@@ -15,7 +15,7 @@ import {IAggregatorV3} from "./interfaces/IAggregatorV3.sol";
 ///          - Sale >= 2x mint price -> 10%
 ///          - Sliding scale otherwise between 0% and 10% fees
 /// @dev If the sale price cannot be converted to USD (unregistered currency, stale or invalid feed answer, reverting
-///      feed), the model falls back to `MAX_ROYALTY_BPS` so that trading is never blocked and royalties are never
+///      feed, overflowing answer, or out-of-range live `decimals()`), the model falls back to `MAX_ROYALTY_BPS` so that trading is never blocked and royalties are never
 ///      under-charged.
 /// @dev This collection does not gate which collections can or can't be traded. That is up to the marketplace contract(s).
 /// @author mpeyfuss
@@ -38,7 +38,6 @@ contract LuciRoyaltyModel is Ownable2Step {
     struct CurrencyConfig {
         bool allowed; // 1 byte
         uint8 currencyDecimals; // 1 byte - decimals of the currency itself (18 for native ETH)
-        uint8 oracleDecimals; // 1 byte - cached from `oracle.decimals()` at configuration time
         uint32 maxAge; // 4 bytes - staleness window in seconds
         address oracle; // 20 bytes - <currency>/USD price feed
     }
@@ -50,7 +49,7 @@ contract LuciRoyaltyModel is Ownable2Step {
     uint256 public constant BASIS = 10_000;
     uint256 public constant MAX_ROYALTY_BPS = 1_000; // 10%
     uint256 public constant USD_DECIMALS = 8;
-    uint8 public constant MAX_CURRENCY_DECIMALS = 36;
+    uint8 public constant MAX_CURRENCY_DECIMALS = 18;
 
     /// @notice Sentinel currency address representing the chain's native asset
     address public constant NATIVE_CURRENCY = address(0);
@@ -68,9 +67,7 @@ contract LuciRoyaltyModel is Ownable2Step {
     event CollectionConfigured(address indexed collection, uint192 indexed mintPriceUsd);
     event RoyaltyRecipientUpdated(address indexed oldRoyaltyRecipient, address indexed newRoyaltyRecipient);
     event TokenOverriden(address indexed collection, uint256 indexed tokenId, uint192 indexed mintPriceUsd);
-    event CurrencyConfigured(
-        address indexed currency, address indexed oracle, uint8 currencyDecimals, uint8 oracleDecimals, uint32 maxAge
-    );
+    event CurrencyConfigured(address indexed currency, address indexed oracle, uint8 currencyDecimals, uint32 maxAge);
     event CurrencyRemoved(address indexed currency);
 
     /////////////////////////////////////////////////////////////////////
@@ -173,7 +170,8 @@ contract LuciRoyaltyModel is Ownable2Step {
 
     /// @notice Registers a sale currency and the price feed used to convert it to USD
     /// @dev Only owner. `currency` may be `NATIVE_CURRENCY` to configure the chain's native asset.
-    /// @dev The oracle's decimals are read once here so that a misconfigured feed surfaces immediately.
+    /// @dev Calls `oracle.decimals()` so a non-contract or out-of-range feed fails immediately. Conversion re-reads
+    ///      `decimals()` live so an aggregator swap that changes scale is picked up.
     /// @param currency The currency address, `NATIVE_CURRENCY` for the native asset
     /// @param oracle The <currency>/USD price feed
     /// @param currencyDecimals The decimals of the currency (18 for native ETH)
@@ -185,19 +183,12 @@ contract LuciRoyaltyModel is Ownable2Step {
         if (oracle == address(0)) revert ZeroAddress();
         if (maxAge == 0) revert InvalidMaxAge();
         if (currencyDecimals > MAX_CURRENCY_DECIMALS) revert InvalidCurrencyDecimals();
+        if (IAggregatorV3(oracle).decimals() > MAX_CURRENCY_DECIMALS) revert InvalidCurrencyDecimals();
 
-        uint8 oracleDecimals = IAggregatorV3(oracle).decimals();
-        if (oracleDecimals > MAX_CURRENCY_DECIMALS) revert InvalidCurrencyDecimals();
+        currencies[currency] =
+            CurrencyConfig({allowed: true, currencyDecimals: currencyDecimals, maxAge: maxAge, oracle: oracle});
 
-        currencies[currency] = CurrencyConfig({
-            allowed: true,
-            currencyDecimals: currencyDecimals,
-            oracleDecimals: oracleDecimals,
-            maxAge: maxAge,
-            oracle: oracle
-        });
-
-        emit CurrencyConfigured(currency, oracle, currencyDecimals, oracleDecimals, maxAge);
+        emit CurrencyConfigured(currency, oracle, currencyDecimals, maxAge);
     }
 
     /// @notice Removes a sale currency, causing sales in it to fall back to the max royalty
@@ -233,11 +224,15 @@ contract LuciRoyaltyModel is Ownable2Step {
             if (answer <= 0) return (0, false);
             if (updatedAt == 0 || updatedAt > block.timestamp) return (0, false);
             if (block.timestamp - updatedAt > config.maxAge) return (0, false);
+            if (uint256(answer) > type(uint256).max / 10 ** USD_DECIMALS) return (0, false);
+
+            uint8 oracleDecimals = IAggregatorV3(config.oracle).decimals();
+            if (oracleDecimals > MAX_CURRENCY_DECIMALS) return (0, false);
 
             usd = Math.mulDiv(
                 amount,
                 uint256(answer) * 10 ** USD_DECIMALS,
-                10 ** uint256(config.currencyDecimals) * 10 ** uint256(config.oracleDecimals)
+                10 ** uint256(config.currencyDecimals) * 10 ** uint256(oracleDecimals)
             );
             ok = true;
         } catch {

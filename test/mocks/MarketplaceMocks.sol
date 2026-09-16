@@ -51,17 +51,27 @@ contract MockRoyaltyModel {
 }
 
 contract MockAggregatorV3 is IAggregatorV3 {
-    uint8 public decimals;
+    uint8 internal _decimals;
     int256 public answer;
     uint256 public updatedAt;
     bool public shouldRevert;
+    bool public shouldRevertDecimals;
 
     error MockAggregatorRevert();
 
     constructor(uint8 decimals_, int256 answer_) {
-        decimals = decimals_;
+        _decimals = decimals_;
         answer = answer_;
         updatedAt = block.timestamp;
+    }
+
+    function decimals() external view override returns (uint8) {
+        if (shouldRevertDecimals) revert MockAggregatorRevert();
+        return _decimals;
+    }
+
+    function setDecimals(uint8 decimals_) external {
+        _decimals = decimals_;
     }
 
     function setAnswer(int256 answer_) external {
@@ -75,6 +85,10 @@ contract MockAggregatorV3 is IAggregatorV3 {
 
     function setShouldRevert(bool shouldRevert_) external {
         shouldRevert = shouldRevert_;
+    }
+
+    function setShouldRevertDecimals(bool shouldRevertDecimals_) external {
+        shouldRevertDecimals = shouldRevertDecimals_;
     }
 
     function latestRoundData()

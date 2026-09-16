@@ -191,6 +191,26 @@ contract LuciMarketTest is LuciTestBase {
         assertEq(royaltyRecipient.balance, cap);
     }
 
+    function test_buyRevertsWhenPositiveRoyaltyRecipientIsZero() public {
+        _list(TOKEN_ID, PRICE, address(0));
+
+        uint256 royaltyAmount = Math.mulDiv(PRICE, market.MAX_ROYALTY_BPS(), market.BASIS());
+        MockRoyaltyModel zeroRecipientModel = new MockRoyaltyModel(address(0), royaltyAmount);
+        vm.prank(owner);
+        market.setRoyaltyModel(address(zeroRecipientModel));
+
+        vm.expectRevert(LuciMarket.ZeroAddress.selector);
+        vm.prank(buyer);
+        market.buy{value: PRICE}(address(nft), TOKEN_ID);
+
+        zeroRecipientModel.setAmount(0);
+        vm.prank(buyer);
+        market.buy{value: PRICE}(address(nft), TOKEN_ID);
+
+        assertEq(nft.ownerOf(TOKEN_ID), buyer);
+        assertEq(seller.balance, PRICE);
+    }
+
     function testFuzz_royaltyNeverExceedsMarketCap(uint256 royaltyAmount) public {
         uint256 cap = Math.mulDiv(PRICE, market.MAX_ROYALTY_BPS(), market.BASIS());
         royaltyAmount = bound(royaltyAmount, 0, PRICE);
@@ -829,6 +849,13 @@ contract LuciMarketTest is LuciTestBase {
         emit LuciMarket.BidExtended(LuciMarket.BidType.TRAIT, address(nft), bidder, 0, traitKey, _expires(2 days));
         vm.prank(bidder);
         market.extendBids(traitSelectors, _expires(2 days));
+
+        vm.prank(owner);
+        market.setCollectionTraitsConfig(address(nft), 0);
+
+        vm.expectRevert(LuciMarket.InvalidTraitKey.selector);
+        vm.prank(bidder);
+        market.extendBids(traitSelectors, _expires(3 days));
     }
 
     function test_expiredBidsCanBeExtendedAndBecomeFillableAgain() public {
