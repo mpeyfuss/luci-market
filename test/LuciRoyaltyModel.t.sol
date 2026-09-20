@@ -90,6 +90,32 @@ contract LuciRoyaltyModelTest is LuciTestBase {
         royaltyModel.overrideToken(address(nft), TOKEN_ID, 1_000e8);
     }
 
+    function test_clearTokenOverrideRestoresCollectionMintAndEmits() public {
+        uint192 overrideUsd = 16_000e8;
+        vm.prank(owner);
+        royaltyModel.overrideToken(address(nft), TOKEN_ID, overrideUsd);
+
+        vm.expectEmit(true, true, false, true, address(royaltyModel));
+        emit LuciRoyaltyModel.TokenOverrideCleared(address(nft), TOKEN_ID);
+
+        vm.prank(owner);
+        royaltyModel.clearTokenOverride(address(nft), TOKEN_ID);
+
+        (bool enabled, uint192 mintPriceUsd) = royaltyModel.tokenOverrides(address(nft), TOKEN_ID);
+        assertFalse(enabled);
+        assertEq(mintPriceUsd, 0);
+
+        // 12 ETH = $24,000 vs the collection $10,000 mint -> >= 2x -> 10%
+        (, uint256 royalty) = royaltyModel.calculateRoyalty(address(nft), TOKEN_ID, 12 ether, NATIVE);
+        assertEq(royalty, 1.2 ether);
+    }
+
+    function test_onlyOwnerCanClearTokenOverride() public {
+        _expectOwnableUnauthorized(other);
+        vm.prank(other);
+        royaltyModel.clearTokenOverride(address(nft), TOKEN_ID);
+    }
+
     /////////////////////////////////////////////////////////////////////
     // ROYALTY CALCULATION
     /////////////////////////////////////////////////////////////////////
@@ -107,15 +133,27 @@ contract LuciRoyaltyModelTest is LuciTestBase {
     }
 
     function test_calculateRoyaltySlidingScale() public view {
-        uint256 salePrice = 7.5 ether; // $15,000 against a $10,000 mint -> 50% profit -> 500 bps
-        uint256 expectedBps = Math.mulDiv(_toUsd(salePrice) - MINT_PRICE_USD, 1_000, MINT_PRICE_USD);
-        uint256 expected = Math.mulDiv(salePrice, expectedBps, 10_000);
+        uint256 salePrice = 7.5 ether; // $15,000 against a $10,000 mint -> 50% profit
+        uint256 expected =
+            Math.mulDiv(salePrice, (_toUsd(salePrice) - MINT_PRICE_USD) * 1_000, uint256(MINT_PRICE_USD) * 10_000);
 
         (, uint256 royalty) = royaltyModel.calculateRoyalty(address(nft), TOKEN_ID, salePrice, NATIVE);
 
-        assertEq(expectedBps, 500);
         assertEq(royalty, expected);
         assertEq(royalty, 0.375 ether); // 5% of 7.5 ETH = 0.375 ETH
+    }
+
+    function test_calculateRoyaltySlidingScaleHasNoBpsDeadZone() public view {
+        // 5 ETH + 5e6 wei is $10,000.00000001 against a $10,000 mint: two-step bps truncated to 0
+        uint256 salePrice = MINT_PRICE + 5e6;
+        uint256 saleUsd = _toUsd(salePrice);
+        assertEq(saleUsd, uint256(MINT_PRICE_USD) + 1);
+
+        uint256 expected = Math.mulDiv(salePrice, 1 * 1_000, uint256(MINT_PRICE_USD) * 10_000);
+        (, uint256 royalty) = royaltyModel.calculateRoyalty(address(nft), TOKEN_ID, salePrice, NATIVE);
+
+        assertGt(expected, 0);
+        assertEq(royalty, expected);
     }
 
     function test_calculateRoyaltyTracksEthPriceMoves() public {
@@ -155,14 +193,16 @@ contract LuciRoyaltyModelTest is LuciTestBase {
         MockAggregatorV3 feed = new MockAggregatorV3(18, 1e18);
 
         vm.expectEmit(true, true, false, true, address(royaltyModel));
-        emit LuciRoyaltyModel.CurrencyConfigured(currency, address(feed), 6, 2 hours);
+        emit LuciRoyaltyModel.CurrencyConfigured(currency, address(feed), 6, 18, 2 hours);
 
         vm.prank(owner);
-        royaltyModel.configureCurrency(currency, address(feed), 6, 2 hours);
+        royaltyModel.configureCurrency(currency, address(feed), 6, 18, 2 hours);
 
-        (bool allowed, uint8 currencyDecimals, uint32 maxAge, address oracle) = royaltyModel.currencies(currency);
+        (bool allowed, uint8 currencyDecimals, uint8 oracleDecimals, uint32 maxAge, address oracle) =
+            royaltyModel.currencies(currency);
         assertTrue(allowed);
         assertEq(currencyDecimals, 6);
+        assertEq(oracleDecimals, 18);
         assertEq(maxAge, 2 hours);
         assertEq(oracle, address(feed));
     }
@@ -170,7 +210,7 @@ contract LuciRoyaltyModelTest is LuciTestBase {
     function test_onlyOwnerCanConfigureOrRemoveCurrency() public {
         _expectOwnableUnauthorized(other);
         vm.prank(other);
-        royaltyModel.configureCurrency(NATIVE, address(ethUsdFeed), 18, 1 hours);
+        royaltyModel.configureCurrency(NATIVE, address(ethUsdFeed), 18, FEED_DECIMALS, 1 hours);
 
         _expectOwnableUnauthorized(other);
         vm.prank(other);
@@ -180,20 +220,19 @@ contract LuciRoyaltyModelTest is LuciTestBase {
     function test_configureCurrencyRevertsForInvalidInputs() public {
         vm.expectRevert(LuciRoyaltyModel.ZeroAddress.selector);
         vm.prank(owner);
-        royaltyModel.configureCurrency(NATIVE, address(0), 18, 1 hours);
+        royaltyModel.configureCurrency(NATIVE, address(0), 18, FEED_DECIMALS, 1 hours);
 
         vm.expectRevert(LuciRoyaltyModel.InvalidMaxAge.selector);
         vm.prank(owner);
-        royaltyModel.configureCurrency(NATIVE, address(ethUsdFeed), 18, 0);
+        royaltyModel.configureCurrency(NATIVE, address(ethUsdFeed), 18, FEED_DECIMALS, 0);
 
         vm.expectRevert(LuciRoyaltyModel.InvalidCurrencyDecimals.selector);
         vm.prank(owner);
-        royaltyModel.configureCurrency(NATIVE, address(ethUsdFeed), 19, 1 hours);
+        royaltyModel.configureCurrency(NATIVE, address(ethUsdFeed), 19, FEED_DECIMALS, 1 hours);
 
-        MockAggregatorV3 wideFeed = new MockAggregatorV3(19, 1e8);
         vm.expectRevert(LuciRoyaltyModel.InvalidCurrencyDecimals.selector);
         vm.prank(owner);
-        royaltyModel.configureCurrency(NATIVE, address(wideFeed), 18, 1 hours);
+        royaltyModel.configureCurrency(NATIVE, address(ethUsdFeed), 18, 19, 1 hours);
     }
 
     function test_removeCurrencyClearsConfigAndEmits() public {
@@ -203,7 +242,7 @@ contract LuciRoyaltyModelTest is LuciTestBase {
         vm.prank(owner);
         royaltyModel.removeCurrency(NATIVE);
 
-        (bool allowed,,, address oracle) = royaltyModel.currencies(NATIVE);
+        (bool allowed,,,, address oracle) = royaltyModel.currencies(NATIVE);
         assertFalse(allowed);
         assertEq(oracle, address(0));
     }
@@ -214,7 +253,7 @@ contract LuciRoyaltyModelTest is LuciTestBase {
         MockAggregatorV3 feed = new MockAggregatorV3(18, 1e18);
 
         vm.prank(owner);
-        royaltyModel.configureCurrency(currency, address(feed), 6, 1 hours);
+        royaltyModel.configureCurrency(currency, address(feed), 6, 18, 1 hours);
 
         address collection = makeAddr("decimalsCollection");
         vm.prank(owner);
@@ -282,6 +321,16 @@ contract LuciRoyaltyModelTest is LuciTestBase {
         _assertMaxRoyaltyFallback();
     }
 
+    function test_fallsBackToMaxRoyaltyWhenConversionWouldOverflow() public {
+        // the largest answer that still passes the `_isUsableRound` bound
+        ethUsdFeed.setAnswer(int256(type(uint256).max / 1e8));
+
+        // converting a ~whole-supply sale at that answer would overflow uint256 without the guard
+        uint256 salePrice = 120_000_000 ether;
+        (, uint256 royalty) = royaltyModel.calculateRoyalty(address(nft), TOKEN_ID, salePrice, NATIVE);
+        assertEq(royalty, Math.mulDiv(salePrice, 1_000, 10_000));
+    }
+
     function test_revertsWhenDecimalsRevert() public {
         ethUsdFeed.setShouldRevertDecimals(true);
         vm.expectRevert(MockAggregatorV3.MockAggregatorRevert.selector);
@@ -293,15 +342,23 @@ contract LuciRoyaltyModelTest is LuciTestBase {
         _assertMaxRoyaltyFallback();
     }
 
-    function test_calculateRoyaltyUsesLiveOracleDecimals() public {
+    function test_fallsBackToMaxRoyaltyWhenLiveOracleDecimalsDiffer() public {
         uint256 salePrice = MINT_PRICE * 2; // $20,000 at 8-dec $2,000/ETH -> 10%
         (, uint256 atEightDecimals) = royaltyModel.calculateRoyalty(address(nft), TOKEN_ID, salePrice, NATIVE);
         assertEq(atEightDecimals, 1 ether);
 
-        // same answer, 18-dec scale: conversion understates USD and the sale looks below mint
+        // same answer, live scale changed: fail closed to max royalty instead of under-charging
         ethUsdFeed.setDecimals(18);
-        (, uint256 atEighteenDecimals) = royaltyModel.calculateRoyalty(address(nft), TOKEN_ID, salePrice, NATIVE);
-        assertEq(atEighteenDecimals, 0);
+        (, uint256 afterScaleChange) = royaltyModel.calculateRoyalty(address(nft), TOKEN_ID, salePrice, NATIVE);
+        assertEq(afterScaleChange, Math.mulDiv(salePrice, 1_000, 10_000));
+    }
+
+    function test_fallsBackToMaxRoyaltyWhenConfiguredDecimalsAreWrong() public {
+        // nothing validates the declared decimals at configure time, but a wrong value fails closed at
+        // conversion: the live decimals (8) differ from the stored value (9)
+        vm.prank(owner);
+        royaltyModel.configureCurrency(NATIVE, address(ethUsdFeed), 18, 9, FEED_MAX_AGE);
+        _assertMaxRoyaltyFallback();
     }
 
     /////////////////////////////////////////////////////////////////////
@@ -325,9 +382,10 @@ contract LuciRoyaltyModelTest is LuciTestBase {
         assertLe(royalty, Math.mulDiv(salePrice, 1_000, 10_000)); // always less than or equal to 10% of sale price
         if (saleUsd <= mintPriceUsd) {
             assertEq(royalty, 0);
-        }
-        if (saleUsd >= uint256(mintPriceUsd) * 2) {
+        } else if (saleUsd >= uint256(mintPriceUsd) * 2) {
             assertEq(royalty, Math.mulDiv(salePrice, 1_000, 10_000));
+        } else {
+            assertEq(royalty, Math.mulDiv(salePrice, (saleUsd - mintPriceUsd) * 1_000, uint256(mintPriceUsd) * 10_000));
         }
     }
 }

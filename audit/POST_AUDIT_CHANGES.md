@@ -52,13 +52,16 @@ change to the contract's trust assumptions.
   reverting. Trading stays available and sellers pay the ceiling while the feed is degraded. This is the
   intended behavior: availability is preferred over precision, and the fallback never under-charges.
 - The oracle call is wrapped in `try/catch`. `catch` covers a revert from the call itself, not a failure
-  decoding its return data. A non-contract oracle is rejected at configuration time, where
-  `configureCurrency` calls `decimals()` on it. Conversion re-reads `decimals()` live. An `answer` that
-  would overflow `answer * 10**USD_DECIMALS` is treated as a failed conversion (max royalty) rather than
-  reverting settlement.
+  decoding its return data. `configureCurrency` makes no external calls; the feed's decimals are
+  owner-declared at configuration time. Conversion re-reads `decimals()` live and falls back to max
+  royalty if they differ from the declared value, so a wrong declaration or a scale change without a
+  matching `answer` rescaling cannot under-charge. An `answer` that would overflow
+  `answer * 10**USD_DECIMALS`, or a converted USD value that would overflow `uint256`, is treated as a
+  failed conversion (max royalty) rather than reverting settlement. A revert from live `decimals()` after
+  a successful round is not caught and reverts settlement, so an oracle that does not fully follow the
+  aggregator interface carries a slight chance of blocking trading until the currency is reconfigured.
 - `MAX_CURRENCY_DECIMALS` (18) matches real currencies and Chainlink feeds. The bound is enforced at
-  configuration time for the currency and the feed, and again at conversion time on the live `decimals()`
-  read.
+  configuration time for the currency and the feed.
 
 ### Reversal of an audited design decision
 
@@ -73,6 +76,8 @@ an internal refactor.
 ### Public interface changes
 
 - `calculateRoyalty` gained a fourth `currency` argument.
+- `configureCurrency` gained an `oracleDecimals` argument; the feed is no longer probed (`decimals()`,
+  `latestRoundData()`) at configuration time.
 - `Listing` dropped `uint256 royaltyAmount`; `buyer` moved from slot 3 to slot 2.
 - `Listed` dropped its trailing `royaltyAmount` argument.
 - Mint price fields renamed to `mintPriceUsd`, carrying the USD denomination described above.
@@ -83,8 +88,9 @@ Nothing is deployed and the contracts are not upgradeable, so the storage layout
 ### New admin surface
 
 `configureCurrency` and `removeCurrency` on `LuciRoyaltyModel`, with the `currencies` registry (allowed flag,
-currency decimals, staleness window, oracle address). This widens what a compromised royalty-model owner key
-can do: previously an arbitrary mint price or recipient, now also an arbitrary price source.
+currency decimals, owner-declared oracle decimals, staleness window, oracle address), plus `clearTokenOverride`.
+This widens what a compromised royalty-model owner key can do: previously an arbitrary mint price or recipient,
+now also an arbitrary price source.
 
 ### New safety bound
 

@@ -154,10 +154,11 @@ The royalty model owner can:
 - Set the royalty recipient.
 - Configure a collection mint price, in USD with 8 decimals.
 - Override the mint price for a specific token, in USD with 8 decimals.
+- Clear a token mint-price override so the collection mint applies again (`clearTokenOverride`).
 - Register a sale currency with its `<currency>/USD` price feed, currency decimals, and staleness window (`configureCurrency`).
 - Remove a sale currency (`removeCurrency`).
 
-Token overrides take precedence over collection configuration when the token override is enabled. A zero address royalty recipient is rejected in the royalty model constructor and setter, and by the marketplace at settlement when the royalty amount is positive. `configureCurrency` rejects a zero oracle, a zero `maxAge`, and currency or feed decimals above 18. It calls `decimals()` at configuration time so a non-contract oracle fails immediately. Conversion re-reads `decimals()` live so an aggregator swap that changes scale is picked up.
+Token overrides take precedence over collection configuration when the token override is enabled. Clearing an override returns that token to the collection mint. A zero address royalty recipient is rejected in the royalty model constructor and setter, and by the marketplace at settlement when the royalty amount is positive. `configureCurrency` rejects a zero oracle, a zero `maxAge`, and currency or feed decimals above 18. The feed's decimals are owner-declared at configuration time rather than probed. Conversion re-reads `decimals()` live and falls back to the maximum royalty if they differ from the stored value, so a wrong declaration or a scale change without a matching `answer` rescaling cannot under-charge.
 
 A freshly deployed royalty model has no currencies registered, so every sale falls back to the maximum royalty until `configureCurrency` is called for the native currency (`address(0)`, 18 decimals) with the ETH/USD feed. Registering currencies and configuring collection mint prices are both required deployment steps.
 
@@ -167,9 +168,9 @@ A freshly deployed royalty model has no currencies registered, so every sale fal
 usd = Math.mulDiv(amount, answer * 10 ** USD_DECIMALS, 10 ** currencyDecimals * 10 ** oracleDecimals);
 ```
 
-Conversion fails — and the model falls back to the **maximum royalty** — when the currency is not registered, the feed reverts, `answer <= 0`, `updatedAt` is zero or in the future, the answer is older than the currency's configured `maxAge`, `answer * 10 ** USD_DECIMALS` would overflow, or live `decimals()` exceeds `MAX_CURRENCY_DECIMALS`. A revert from live `decimals()` after a successful round is not caught and bubbles out of settlement. Falling back rather than reverting keeps trading available during a feed outage while never under-charging royalties. Freshness is `updatedAt` versus `maxAge`; Chainlink's `answeredInRound` is deprecated and is not checked.
+Conversion fails — and the model falls back to the **maximum royalty** — when the currency is not registered, the feed reverts, `answer <= 0`, `updatedAt` is zero or in the future, the answer is older than the currency's configured `maxAge`, `answer * 10 ** USD_DECIMALS` would overflow, the converted USD value would overflow, or live `decimals()` differs from the value stored at `configureCurrency`. A revert from live `decimals()` after a successful round is not caught and reverts settlement, so an oracle that does not fully follow the aggregator interface carries a slight chance of blocking trading until the currency is reconfigured. Falling back rather than reverting keeps trading available during a feed outage while never under-charging royalties. Freshness is `updatedAt` versus `maxAge`; Chainlink's `answeredInRound` is deprecated and is not checked.
 
-`MAX_CURRENCY_DECIMALS` is `18`, matching real currencies and Chainlink feeds (8 or 18). The bound is enforced at configuration time for the currency and the feed, and again at conversion time on the live `decimals()` read. An `answer` large enough that `answer * 10 ** USD_DECIMALS` would overflow is treated as a failed conversion rather than reverting settlement. That overflow is not reachable on a realistic ETH/USD tick.
+`MAX_CURRENCY_DECIMALS` is `18`, matching real currencies and Chainlink feeds (8 or 18). The bound is enforced at configuration time for the currency and the feed. An `answer` large enough that `answer * 10 ** USD_DECIMALS` would overflow, or a converted USD value large enough to overflow `uint256`, is treated as a failed conversion rather than reverting settlement. Neither overflow is reachable on a realistic ETH/USD tick.
 
 ### Choosing `maxAge`
 
@@ -207,11 +208,10 @@ Let `saleUsd` be the sale price converted to USD. Royalty behavior:
 For the sliding-scale range:
 
 ```solidity
-bps = Math.mulDiv(saleUsd - mintPriceUsd, MAX_ROYALTY_BPS, mintPriceUsd);
-royalty = Math.mulDiv(salePrice, bps, BASIS);
+royalty = Math.mulDiv(salePrice, (saleUsd - mintPriceUsd) * MAX_ROYALTY_BPS, mintPriceUsd * BASIS);
 ```
 
-The percentage is derived in USD and then applied to the sale price in its own currency. Both `mulDiv` steps round down, so the royalty never exceeds 10% of the sale price.
+The percentage is derived in USD and then applied to the sale price in its own currency. Units cancel (ETH × USD / USD), so this is a single `mulDiv` rather than truncating to integer basis points first. The result still rounds down, so the royalty never exceeds 10% of the sale price.
 
 Unconfigured collections intentionally default to `mintPriceUsd == 0`, which charges full royalties for any positive sale price. A configured collection or enabled token override with a zero mint price has the same positive-sale behavior. The marketplace owner controls which collections and tokens can trade, so royalty readiness is an operational allowlist decision.
 
@@ -361,7 +361,7 @@ The royalty model owner manages:
 
 - Royalty recipient.
 - Collection mint price configuration (USD).
-- Token mint price overrides (USD).
+- Token mint price overrides (USD), including clearing an override.
 - Sale currency registry and the price feeds backing it.
 
 Owner-managed trait data is trusted. The marketplace does not derive traits from token metadata or validate trait values beyond the compact encoding rules used for matching.
@@ -395,7 +395,7 @@ Owner-managed trait data is trusted. The marketplace does not derive traits from
 - **Sanctioned escrow**: sanctioned bidders cannot withdraw bid escrow until no longer sanctioned.
 - **Owner trust**: owners can pause trading, change allowlists, set traits, change the royalty model, change sanctions enforcement, and configure royalties, currencies, and price feeds.
 - **Marketplace royalty ceiling**: `LuciMarket` rejects any settlement where the royalty exceeds `MAX_ROYALTY_BPS` (10%) of the sale price, or where a positive royalty would be paid to the zero address. Both checks run in `_settleSale`, covering `buy` and `acceptBid`, and apply to any royalty model the owner configures.
-- **Oracle trust**: the royalty model calls an owner-configured price feed during settlement. A degraded feed falls back to the maximum royalty rather than reverting, and the royalty model owner can point a currency at any contract. The marketplace royalty ceiling bounds the impact.
+- **Oracle trust**: the royalty model calls an owner-configured price feed during settlement. A degraded feed, or a live `decimals()` change relative to configure time, falls back to the maximum royalty rather than reverting, and the royalty model owner can point a currency at any contract. The marketplace royalty ceiling bounds the impact.
 
 ### Audit
 

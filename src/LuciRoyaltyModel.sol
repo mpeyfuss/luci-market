@@ -14,9 +14,7 @@ import {IAggregatorV3} from "./interfaces/IAggregatorV3.sol";
 ///          - Sale <= mint price -> 0%
 ///          - Sale >= 2x mint price -> 10%
 ///          - Sliding scale otherwise between 0% and 10% fees
-/// @dev If the sale price cannot be converted to USD (unregistered currency, stale or invalid feed answer, reverting
-///      feed, overflowing answer, or out-of-range live `decimals()`), the model falls back to `MAX_ROYALTY_BPS` so that trading is never blocked and royalties are never
-///      under-charged.
+/// @dev If the sale price cannot be converted to USD, the model falls back to `MAX_ROYALTY_BPS`.
 /// @dev This collection does not gate which collections can or can't be traded. That is up to the marketplace contract(s).
 /// @author mpeyfuss
 /// @author Sam Spratt
@@ -38,6 +36,7 @@ contract LuciRoyaltyModel is Ownable2Step {
     struct CurrencyConfig {
         bool allowed; // 1 byte
         uint8 currencyDecimals; // 1 byte - decimals of the currency itself (18 for native ETH)
+        uint8 oracleDecimals; // 1 byte - feed decimals declared at configure time
         uint32 maxAge; // 4 bytes - staleness window in seconds
         address oracle; // 20 bytes - <currency>/USD price feed
     }
@@ -67,7 +66,10 @@ contract LuciRoyaltyModel is Ownable2Step {
     event CollectionConfigured(address indexed collection, uint192 indexed mintPriceUsd);
     event RoyaltyRecipientUpdated(address indexed oldRoyaltyRecipient, address indexed newRoyaltyRecipient);
     event TokenOverriden(address indexed collection, uint256 indexed tokenId, uint192 indexed mintPriceUsd);
-    event CurrencyConfigured(address indexed currency, address indexed oracle, uint8 currencyDecimals, uint32 maxAge);
+    event TokenOverrideCleared(address indexed collection, uint256 indexed tokenId);
+    event CurrencyConfigured(
+        address indexed currency, address indexed oracle, uint8 currencyDecimals, uint8 oracleDecimals, uint32 maxAge
+    );
     event CurrencyRemoved(address indexed currency);
 
     /////////////////////////////////////////////////////////////////////
@@ -125,19 +127,15 @@ contract LuciRoyaltyModel is Ownable2Step {
             return (recipient, Math.mulDiv(salePrice, MAX_ROYALTY_BPS, BASIS));
         }
 
-        // determine the royalty percentage in USD terms
-        uint256 bps;
+        // determine the royalty percentage based on USD values
         if (saleUsd <= mintPriceUsd) {
-            bps = 0;
-        } else if (saleUsd >= mintPriceUsd * 2) {
-            bps = MAX_ROYALTY_BPS;
-        } else {
-            // sliding scale - royalty perc is based on profit and then calculated against total sale price
-            bps = Math.mulDiv(saleUsd - mintPriceUsd, MAX_ROYALTY_BPS, mintPriceUsd);
+            return (recipient, 0);
         }
-
-        // apply the percentage to the sale price in its original currency
-        royaltyToPay = Math.mulDiv(salePrice, bps, BASIS);
+        if (saleUsd >= mintPriceUsd * 2) {
+            return (recipient, Math.mulDiv(salePrice, MAX_ROYALTY_BPS, BASIS));
+        }
+        // sliding scale
+        royaltyToPay = Math.mulDiv(salePrice, (saleUsd - mintPriceUsd) * MAX_ROYALTY_BPS, mintPriceUsd * BASIS);
     }
 
     /////////////////////////////////////////////////////////////////////
@@ -168,27 +166,45 @@ contract LuciRoyaltyModel is Ownable2Step {
         emit TokenOverriden(collection, tokenId, mintPriceUsd);
     }
 
+    /// @notice Clears a token mint-price override so the collection mint price applies again
+    /// @dev Only owner
+    function clearTokenOverride(address collection, uint256 tokenId) external onlyOwner {
+        delete tokenOverrides[collection][tokenId];
+
+        emit TokenOverrideCleared(collection, tokenId);
+    }
+
     /// @notice Registers a sale currency and the price feed used to convert it to USD
     /// @dev Only owner. `currency` may be `NATIVE_CURRENCY` to configure the chain's native asset.
-    /// @dev Calls `oracle.decimals()` so a non-contract or out-of-range feed fails immediately. Conversion re-reads
-    ///      `decimals()` live so an aggregator swap that changes scale is picked up.
+    /// @dev The feed is not probed at configure time: `oracleDecimals` is owner-declared, and conversion re-reads
+    ///      `decimals()` live and falls back to `MAX_ROYALTY_BPS` if it differs, so a wrong declaration or a scale
+    ///      change without a matching `answer` rescaling fails closed.
     /// @param currency The currency address, `NATIVE_CURRENCY` for the native asset
     /// @param oracle The <currency>/USD price feed
     /// @param currencyDecimals The decimals of the currency (18 for native ETH)
+    /// @param oracleDecimals The decimals of the feed's answers
     /// @param maxAge The maximum age of a feed answer, in seconds, before it is considered stale
-    function configureCurrency(address currency, address oracle, uint8 currencyDecimals, uint32 maxAge)
-        external
-        onlyOwner
-    {
+    function configureCurrency(
+        address currency,
+        address oracle,
+        uint8 currencyDecimals,
+        uint8 oracleDecimals,
+        uint32 maxAge
+    ) external onlyOwner {
         if (oracle == address(0)) revert ZeroAddress();
         if (maxAge == 0) revert InvalidMaxAge();
         if (currencyDecimals > MAX_CURRENCY_DECIMALS) revert InvalidCurrencyDecimals();
-        if (IAggregatorV3(oracle).decimals() > MAX_CURRENCY_DECIMALS) revert InvalidCurrencyDecimals();
+        if (oracleDecimals > MAX_CURRENCY_DECIMALS) revert InvalidCurrencyDecimals();
 
-        currencies[currency] =
-            CurrencyConfig({allowed: true, currencyDecimals: currencyDecimals, maxAge: maxAge, oracle: oracle});
+        currencies[currency] = CurrencyConfig({
+            allowed: true,
+            currencyDecimals: currencyDecimals,
+            oracleDecimals: oracleDecimals,
+            maxAge: maxAge,
+            oracle: oracle
+        });
 
-        emit CurrencyConfigured(currency, oracle, currencyDecimals, maxAge);
+        emit CurrencyConfigured(currency, oracle, currencyDecimals, oracleDecimals, maxAge);
     }
 
     /// @notice Removes a sale currency, causing sales in it to fall back to the max royalty
@@ -221,22 +237,31 @@ contract LuciRoyaltyModel is Ownable2Step {
         try IAggregatorV3(config.oracle).latestRoundData() returns (
             uint80, int256 answer, uint256, uint256 updatedAt, uint80
         ) {
-            if (answer <= 0) return (0, false);
-            if (updatedAt == 0 || updatedAt > block.timestamp) return (0, false);
-            if (block.timestamp - updatedAt > config.maxAge) return (0, false);
-            if (uint256(answer) > type(uint256).max / 10 ** USD_DECIMALS) return (0, false);
+            if (!_isUsableRound(answer, updatedAt, config.maxAge)) return (0, false);
 
-            uint8 oracleDecimals = IAggregatorV3(config.oracle).decimals();
-            if (oracleDecimals > MAX_CURRENCY_DECIMALS) return (0, false);
+            if (IAggregatorV3(config.oracle).decimals() != config.oracleDecimals) return (0, false);
 
-            usd = Math.mulDiv(
-                amount,
-                uint256(answer) * 10 ** USD_DECIMALS,
-                10 ** uint256(config.currencyDecimals) * 10 ** uint256(oracleDecimals)
-            );
+            uint256 scale = uint256(answer) * 10 ** USD_DECIMALS;
+            uint256 denominator = 10 ** uint256(config.currencyDecimals) * 10 ** uint256(config.oracleDecimals);
+            // a conversion result that would overflow is treated as a failed conversion
+            // the conversion overflows when amount * scale / denominator exceeds uint256
+            if (scale > denominator && amount > Math.mulDiv(type(uint256).max, denominator, scale)) {
+                return (0, false);
+            }
+
+            usd = Math.mulDiv(amount, scale, denominator);
             ok = true;
         } catch {
             return (0, false);
         }
+    }
+
+    /// @dev Whether `answer` / `updatedAt` is a currently usable feed tick for `maxAge`
+    function _isUsableRound(int256 answer, uint256 updatedAt, uint32 maxAge) internal view returns (bool) {
+        if (answer <= 0) return false;
+        if (updatedAt == 0 || updatedAt > block.timestamp) return false;
+        if (block.timestamp - updatedAt > maxAge) return false;
+        if (uint256(answer) > type(uint256).max / 10 ** USD_DECIMALS) return false; // overflow check
+        return true;
     }
 }

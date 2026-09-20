@@ -46,7 +46,7 @@ abstract contract LuciTestBase is Test {
         market.addCollection(address(nft));
 
         vm.prank(owner);
-        royaltyModel.configureCurrency(address(0), address(ethUsdFeed), 18, FEED_MAX_AGE);
+        royaltyModel.configureCurrency(address(0), address(ethUsdFeed), 18, FEED_DECIMALS, FEED_MAX_AGE);
 
         vm.prank(owner);
         royaltyModel.configureCollection(address(nft), MINT_PRICE_USD);
