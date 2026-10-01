@@ -2,6 +2,9 @@
 # (-include to ignore error if it does not exist)
 -include .env
 
+BATCH_SIZE ?= 250
+OUTPUT ?= traits.json
+
 ########################################
 # Dependencies
 ########################################
@@ -47,3 +50,42 @@ test-cov: build
 
 test-fuzz: build
 	forge test --fuzz-runs 10000
+
+########################################
+# LuciRoyaltyModel Deployments
+########################################
+deploy_LuciRoyaltyModel_testnet: build
+	forge script --ledger --sender ${SENDER} --broadcast --sig "run(string,string,uint256)" script/Deploy.s.sol:Deploy "LuciRoyaltyModel.sol:LuciRoyaltyModel" sepolia 11155111
+	sleep 60
+	forge verify-contract $$(cat out.txt) src/LuciRoyaltyModel.sol:LuciRoyaltyModel --chain 11155111 --watch --constructor-args ${CONSTRUCTOR_ARGS}
+	@bash print_and_clean.sh
+
+deploy_LuciRoyaltyModel_mainnet: build
+	forge script --ledger --sender ${SENDER} --broadcast --sig "run(string,string,uint256)" script/Deploy.s.sol:Deploy "LuciRoyaltyModel.sol:LuciRoyaltyModel" mainnet 1
+	sleep 60
+	forge verify-contract $$(cat out.txt) src/LuciRoyaltyModel.sol:LuciRoyaltyModel --chain 1 --watch --constructor-args ${CONSTRUCTOR_ARGS}
+	@bash print_and_clean.sh
+
+########################################
+# LuciMarket Deployments
+########################################
+deploy_LuciMarket_testnet: build
+	forge script --ledger --sender ${SENDER} --broadcast --sig "run(string,string,uint256)" script/Deploy.s.sol:Deploy "LuciMarket.sol:LuciMarket" sepolia 11155111
+	sleep 60
+	forge verify-contract $$(cat out.txt) src/LuciMarket.sol:LuciMarket --chain 11155111 --watch --constructor-args ${CONSTRUCTOR_ARGS}
+	@bash print_and_clean.sh
+
+deploy_LuciMarket_mainnet: build
+	forge script --ledger --sender ${SENDER} --broadcast --sig "run(string,string,uint256)" script/Deploy.s.sol:Deploy "LuciMarket.sol:LuciMarket" mainnet 1
+	sleep 60
+	forge verify-contract $$(cat out.txt) src/LuciMarket.sol:LuciMarket --chain 1 --watch --constructor-args ${CONSTRUCTOR_ARGS}
+	@bash print_and_clean.sh
+
+########################################
+# Trait calldata
+########################################
+traits:
+	python3 script/pack_traits.py --input $(INPUT) --output $(OUTPUT) --batch-size $(BATCH_SIZE)
+
+test-traits:
+	python3 script/test_pack_traits.py

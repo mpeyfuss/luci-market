@@ -13,6 +13,41 @@ A bespoke ETH marketplace for trading ERC-721 tokens from Sam Spratt collections
 
 Both main contracts use `Ownable2Step`. The marketplace owner and royalty model owner may be the same address, but they are separate ownership domains.
 
+## Deployment
+
+Recorded deployments live in `deployments.json`. Each version stores `constructor_args`, `salt`, and `deployed_contract`. Copy `sample.env` to `.env` and set the RPC URLs, `ETHERSCAN_KEY`, `SENDER`, `CONSTRUCTOR_ARGS`, and `SALT`.
+
+`script/Deploy.s.sol` deploys one contract at a time through the canonical CreateX factory (`0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed`) using CREATE3. The address comes from the sender and salt, so Sepolia and mainnet can use different constructor arguments and still land on the same address. Deploy `LuciRoyaltyModel` first. Its logged address goes into the `LuciMarket` constructor, including that chain's sanctions list.
+
+```sh
+cast abi-encode "constructor(address,address)" <owner> <royaltyRecipient>
+make deploy_LuciRoyaltyModel_testnet
+
+cast abi-encode "constructor(address,address,address)" <owner> <royaltyModel> <sanctionsList>
+make deploy_LuciMarket_testnet
+```
+
+`SALT` is 32 bytes. The first 20 bytes are `SENDER`, which stops anyone else from taking the salt. Byte 21 is `0x00` when Sepolia and mainnet should share an address, or `0x01` when the chain id should be part of the salt. Use a different salt for each contract.
+
+Use the `_mainnet` targets for Ethereum mainnet. The script takes an RPC alias from `foundry.toml` and the chain id that RPC must report. To add a chain, add its `[rpc_endpoints]` and `[etherscan]` entries and copy a Makefile target with the new alias, chain id, and `--chain` value. The script signs with a Ledger (`--ledger`) from `SENDER`. After a broadcast, copy the address, constructor arguments, and salt into `deployments.json`.
+
+Chain-specific setup is separate from deployment. From the owner, with `cast calldata` or `cast send`:
+
+1. `configureCurrency(address,address,uint8,uint8,uint32)` on `LuciRoyaltyModel` for native ETH (`address(0)`, 18 currency decimals, the ETH/USD feed, its decimals, and `maxAge`).
+2. `addCollection(address)` on `LuciMarket`.
+3. `configureCollection(address,uint192)` on `LuciRoyaltyModel` with the mint price in USD, 8 decimals.
+4. `setCollectionTraitsConfig(address,uint32)`, then `setTraits(address,uint256[],uint32[])`.
+
+Trait CSVs use the header `token_id,trait_0,trait_1,trait_2,trait_3`. Values are indexes from 0 through 63. A blank cell is an unset slot.
+
+```sh
+make traits INPUT=traits.csv OUTPUT=traits.json
+cast calldata "setCollectionTraitsConfig(address,uint32)" <collection> <trait_config>
+cast calldata "setTraits(address,uint256[],uint32[])" <collection> "[1,2]" "[0x00008c85,0x00008c86]"
+```
+
+`trait_config` and each batch's `token_ids` and `traits` come from `traits.json`. Use `BATCH_SIZE` when one `setTraits` call would approach the block gas limit.
+
 ## Listings
 
 Token owners can list NFTs for a fixed ETH price. Listings are time-gated with a maximum duration of 180 days and do not escrow the NFT. The token remains in the seller's wallet until purchased. Listing requires the marketplace to be approved for the token so incorrect approval or UI flows fail immediately instead of publishing an already unfulfillable listing. Listings do not store a royalty amount; royalties are resolved at settlement, so `list` makes no call to the royalty model. Calling `list` again for the same token updates or replaces the stored listing, including stale listings left by a previous owner.
