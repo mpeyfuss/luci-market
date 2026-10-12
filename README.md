@@ -1,12 +1,12 @@
 # Luci Market
 
-A bespoke ETH marketplace for trading ERC-721 tokens from Sam Spratt collections. The system supports fixed-price listings, token bids, collection bids, trait-based bids, escrowed ETH offers, sanctions checks, token-level allowlisting for shared contracts, and enforced on-chain royalties through an external royalty model.
+A bespoke ETH marketplace for trading ERC-721 tokens from Sam Spratt collections. The system supports fixed-price listings, token bids, collection bids, selection bids on any set of tokens across collections, escrowed ETH offers, sanctions checks, token-level allowlisting for shared contracts, and enforced on-chain royalties through an external royalty model.
 
 ![Contract architecture](./public/contract-architecture.png)
 
 ## Contracts
 
-- `LuciMarket` in `src/LuciMarket.sol` handles listings, bid escrow, settlement, collection/token allowlists, trait data, pausing, and sanctions checks.
+- `LuciMarket` in `src/LuciMarket.sol` handles listings, bid escrow, settlement, collection/token allowlists, selection proof checks, pausing, and sanctions checks.
 - `LuciRoyaltyModel` in `src/LuciRoyaltyModel.sol` calculates royalties from configured mint prices and holds the royalty recipient.
 - `ISanctionsList` in `src/interfaces/ISanctionsList.sol` is the Chainalysis-compatible sanctions interface used by the marketplace.
 - `IAggregatorV3` in `src/interfaces/IAggregatorV3.sol` is the minimal Chainlink aggregator interface used by the royalty model to read `<currency>/USD` price feeds.
@@ -36,17 +36,6 @@ Chain-specific setup is separate from deployment. From the owner, with `cast cal
 1. `configureCurrency(address,address,uint8,uint8,uint32)` on `LuciRoyaltyModel` for native ETH (`address(0)`, 18 currency decimals, the ETH/USD feed, its decimals, and `maxAge`).
 2. `addCollection(address)` on `LuciMarket`.
 3. `configureCollection(address,uint192)` on `LuciRoyaltyModel` with the mint price in USD, 8 decimals.
-4. `setCollectionTraitsConfig(address,uint32)`, then `setTraits(address,uint256[],uint32[])`.
-
-Trait CSVs use the header `token_id,trait_0,trait_1,trait_2,trait_3`. Values are indexes from 0 through 63. A blank cell is an unset slot.
-
-```sh
-make traits INPUT=traits.csv OUTPUT=traits.json
-cast calldata "setCollectionTraitsConfig(address,uint32)" <collection> <trait_config>
-cast calldata "setTraits(address,uint256[],uint32[])" <collection> "[1,2]" "[0x00008c85,0x00008c86]"
-```
-
-`trait_config` and each batch's `token_ids` and `traits` come from `traits.json`. Use `BATCH_SIZE` when one `setTraits` call would approach the block gas limit.
 
 ## Listings
 
@@ -54,9 +43,9 @@ Token owners can list NFTs for a fixed ETH price. Listings are time-gated with a
 
 Listings can be public or private. A public listing sets `buyer` to `address(0)` and can be purchased by anyone. A private listing sets `buyer` to a specific address, and only that address can call `buy`.
 
-Listings can be extended in batch while the marketplace is unpaused and the collection or token remains allowed. Extension can revive expired listings as long as the stored seller calls it and the new expiration is valid. Listings can be delisted at any time, including while the marketplace is paused, after the collection/token has been removed from the allowlist, or while the seller is sanctioned. Delisting does not transfer or release assets, so it does not perform a sanctions check.
+Listings can be extended in batch while the marketplace is unpaused and the collection or token remains allowed. Extension can revive expired listings as long as the stored seller calls it, still owns the token, still has the marketplace approved, and the new expiration is valid. Listings can be delisted at any time, including while the marketplace is paused, after the collection/token has been removed from the allowlist, or while the seller is sanctioned. Delisting does not transfer or release assets, so it does not perform a sanctions check.
 
-If a listed token is transferred outside the marketplace, the listing becomes stale. Approval can also be revoked after listing. At settlement, the ERC-721 `transferFrom` call enforces that the stored seller currently owns the token and that the marketplace is currently approved. A stale or approval-blocked listing can become executable again if the original seller reacquires or re-approves the token before expiry, so frontends and indexers should filter stale listings.
+If a listed token is transferred outside the marketplace, the listing becomes stale. Approval can also be revoked after listing. At settlement, the ERC-721 `transferFrom` call enforces that the stored seller currently owns the token and that the marketplace is currently approved. A stale or approval-blocked listing can become executable again if the original seller reacquires or re-approves the token before expiry, so frontends and indexers should filter stale listings. A stale listing cannot be extended while the seller does not own the token or has not approved the marketplace, so it lapses at its original expiry at the latest.
 
 ## Offers
 
@@ -64,11 +53,11 @@ There are three bid types. Each bid escrows ETH when placed and stores an amount
 
 - **Token bid**: a bid on a specific token.
 - **Collection bid**: a standing bid for any token in an allowed collection.
-- **Trait bid**: a standing bid for any token in an allowed collection that matches a trait key.
+- **Selection bid**: a standing bid for any token in a set of tokens committed to by a Merkle root, which can span collections. See [Selection Bids](#selection-bids).
 
-A bidder can hold one stored bid per type per collection, token, or trait key as applicable. Expired bids still occupy their key until the bidder cancels them or extends them. Bids can be increased while unexpired, extended even after expiry, or canceled while expired. Increasing and extending require the marketplace to be unpaused and the relevant collection or token to be allowed.
+A bidder can hold one stored bid per token, per collection, and per selection. Expired bids still occupy their key until the bidder cancels them or extends them. Bids can be increased while unexpired, extended even after expiry, or canceled while expired. Increasing and extending require the marketplace to be unpaused. For token and collection bids they also require the relevant collection or token to be allowed; selection bids check eligibility per token at acceptance instead.
 
-Bid placement, increases, and acceptance use a unified `BidSelector` API. The selector's `bidType` determines whether `tokenId` identifies a token bid, `collection` identifies a collection bid, or `traitKey` identifies a trait bid. When accepting any bid, `tokenId` identifies the NFT being sold. Each placement or increase funds exactly one bid; only extension and cancellation support batching. Bid lifecycle logs use the generic `BidPlaced`, `BidIncreased`, `BidExtended`, `BidCanceled`, and `BidAccepted` events, with `bidType`, `collection`, and `bidder` indexed.
+Bid placement, increases, and acceptance use a unified `BidSelector` API. The selector's `bidType` determines whether `tokenId` identifies a token bid, `collection` identifies a collection bid, or `selectionRoot` identifies a selection bid. When accepting any bid, `collection` and `tokenId` identify the NFT being sold. `acceptBid` also takes a Merkle `proof`, which only selection bids use; token and collection bids pass an empty array. Each placement or increase funds exactly one bid; only extension and cancellation support batching. Bid lifecycle logs use the generic `BidPlaced`, `BidIncreased`, `BidExtended`, `BidCanceled`, and `BidAccepted` events, with `bidType`, `collection`, and `bidder` indexed. Fields a bid type does not use are emitted as zero. Selection bid events emit `address(0)` as the `collection`, except `BidAccepted`, which emits the sold token's collection.
 
 Bid acceptance includes a `minAmount` parameter to protect the seller from accepting less than expected if the bid changes before the seller's transaction executes. Accepted bids are deleted, and accepting any bid for a token clears that token's existing listing to avoid leaving a stale listing behind.
 
@@ -130,37 +119,35 @@ flowchart TD
     G --> H[Emit BidAccepted with COLLECTION type]
 ```
 
-### Trait Bid
+### Selection Bid
 
 ```mermaid
 flowchart TD
-    A[Owner configures enabled trait slots] --> B[Owner sets token traits]
-    B --> C[Bidder places trait bid with ETH and traitKey]
-    C --> D{traitKey nonzero and only uses enabled slots?}
-    D -- No --> X[Revert]
-    D -- Yes --> E[Trait bid stored]
-    E --> F[Seller accepts for matching token]
-    F --> G{Bid valid and trait config still allows key?}
-    G -- No --> X
-    G -- Yes --> H{Token has every required trait slot initialized?}
-    H -- No --> Y[Revert TraitNotSet]
-    H -- Yes --> I{Token trait values match key?}
-    I -- No --> Z[Revert TraitMismatch]
+    A[Site resolves criteria offchain into token IDs] --> B[Site builds a Merkle tree and stores it]
+    B --> C[placeBid with SELECTION type and the selectionRoot]
+    C --> F[Selection bid stored]
+    F --> G[Holder calls acceptBid with collection, tokenId, selectionRoot, and proof from the site]
+    G --> H{Unpaused, unsanctioned, collection or token allowed, unexpired, minAmount met?}
+    H -- No --> X[Revert]
+    H -- Yes --> I{Proof valid for the token?}
+    I -- No --> Y[Revert TokenNotInSelection]
     I -- Yes --> J[Delete bid and clear listing]
     J --> K[Transfer NFT with transferFrom]
     K -- Ownership or approval invalid --> X
     K -- Success --> L[Pay royalty and seller]
-    L --> M[Emit BidAccepted with TRAIT type]
+    L --> M[Emit BidAccepted with SELECTION type and the sold token's collection]
 ```
 
 ## Collection And Token Allowlisting
 
 The marketplace supports two allowlist modes:
 
-- **Allowed collections**: full collection support. Tokens in an allowed collection can be listed, bought, bid on with token bids, bid on with collection bids, and bid on with trait bids.
-- **Allowed tokens**: token-level support for shared contracts. An individually allowed token can be listed, bought, and bid on with token bids, but it is not eligible for collection bids or trait bids.
+- **Allowed collections**: full collection support. Tokens in an allowed collection can be listed, bought, bid on with token bids and collection bids, and sold into selection bids.
+- **Allowed tokens**: token-level support for shared contracts. An individually allowed token can be listed, bought, bid on with token bids, and sold into selection bids, but it is not eligible for collection bids.
 
-Removing a collection or token blocks new orders, extensions, and fulfillment for that collection or token, but it does not delete existing listings or escrowed bids. Users can still delist without a sanctions check. Bid cancellation remains subject to sanctions checks because it returns escrowed ETH. If a collection or token is later allowed again, unexpired orders can become executable again unless users have removed them.
+The token allowlist only adds tokens from shared contracts whose collection is not allowed. It is not a blocklist: every token in an allowed collection is tradable regardless of `allowedTokens`, so `removeToken` only affects a token whose collection is not allowed.
+
+Removing a collection, or removing an individually allowed token from a collection that is not allowed, blocks new orders, extensions, and fulfillment for that collection or token, but it does not delete existing listings or escrowed bids. Selection bids are the exception for new orders and extensions: the contract does not know a selection's contents, so removal blocks the token from fulfillment, but selection bids that include it can still be placed, increased, and extended (see [Eligibility](#eligibility)). Users can still delist without a sanctions check. Bid cancellation remains subject to sanctions checks because it returns escrowed ETH. If a collection or token is later allowed again, unexpired orders can become executable again unless users have removed them.
 
 ## Royalty Model
 
@@ -250,109 +237,61 @@ The percentage is derived in USD and then applied to the sale price in its own c
 
 Unconfigured collections intentionally default to `mintPriceUsd == 0`, which charges full royalties for any positive sale price. A configured collection or enabled token override with a zero mint price has the same positive-sale behavior. The marketplace owner controls which collections and tokens can trade, so royalty readiness is an operational allowlist decision.
 
-## Trait Bidding System
+## Selection Bids
 
-The trait bidding system allows bidders to place offers on tokens matching specific trait combinations. It uses a compact `uint32` for token traits and a `uint256` for trait bid keys.
+A selection bid is an escrowed ETH offer on an explicit set of tokens. Any holder of a token in the set can accept it, and the set can span multiple collections. The set is committed to by a Merkle root: the contract stores only the root, inside the bid. The site resolves traits, or any other criteria, offchain, builds the tree, and keeps it so it can hand sellers their proofs.
 
-### Token Trait Encoding (`uint32`)
+> **The site MUST NOT offer trait-based selections for collections whose metadata can still change.** A selection is a frozen snapshot of token IDs. If a token's traits change after the bid is placed, the selection still reflects the old traits: a "Gold Background" bid could be filled with a token that no longer has a gold background, and a token that gains one is not included. Only build trait selections for collections with frozen metadata.
 
-Each token's traits are stored as four 8-bit slots:
+### Merkle Tree Format
 
-```text
-[ Trait 3 ][ Trait 2 ][ Trait 1 ][ Trait 0 ]
-```
+Trees use the [OpenZeppelin standard Merkle tree](https://github.com/OpenZeppelin/merkle-tree) format, so `StandardMerkleTree.of(values, ["address", "uint256"])` from `@openzeppelin/merkle-tree` produces compatible roots and proofs:
 
-Each 8-bit slot is:
+- Each leaf is `keccak256(bytes.concat(keccak256(abi.encode(collection, tokenId))))`. The double hash keeps a leaf from ever being confused with an internal node.
+- Pairs are hashed in sorted order, and proofs are verified with OpenZeppelin's `MerkleProof`.
+- `selectionRoot` is the selection's Merkle root. A zero root is rejected with `InvalidSelection`.
 
-```text
-bit 7      initialized flag
-bit 6      reserved
-bits 5-0   value index, 0-63
-```
+The same token ID in two collections is two different leaves. Any `uint256` token ID is supported. `test_openZeppelinStandardMerkleTreeVector` pins a root and proofs generated by `@openzeppelin/merkle-tree` 1.0.8.
 
-A trait slot with bit 7 unset cannot satisfy a trait bid. This prevents tokens with partially configured traits from matching bids that reference unconfigured slots.
+### Lifecycle
 
-Example:
+- `placeBid` with `bidType = SELECTION` and the `selectionRoot` places a bid. There is no creation step, and placement costs the same whatever the selection's size.
+- `increaseBid`, `extendBids`, and `cancelBids` take the `selectionRoot` like any other bid type.
+- `acceptBid(bidSelector, bidder, minAmount, proof)` sells a token into a selection bid, with `bidSelector.collection` and `bidSelector.tokenId` naming the token. It reverts with `TokenNotInSelection` if the proof does not show the token is in the selection. A single-token selection's root is its leaf, so it takes an empty proof.
+- `isInSelection(selectionRoot, collection, tokenId, proof)` verifies a proof. It does not check the allowlist.
 
-- Trait 0 = value `5`, initialized: `0x85`
-- Trait 1 = value `12`, initialized: `0x8C`
-- Trait 2 = unused: `0x00`
-- Trait 3 = unused: `0x00`
+Many bidders can bid on the same root. Filling or canceling a bid deletes only that bid.
 
-Encoded token traits: `0x00008C85`
+### Data Availability
 
-### Trait Key Encoding (`uint256`)
+The contract never sees a selection's contents. If the tree behind a root is lost, nobody can produce proofs and the bid cannot be filled. The escrowed ETH is never at risk: the bidder can cancel at any time. The site must store every tree it builds, keyed by root, and serve proofs to sellers.
 
-A trait key is four packed 64-bit bitmaps:
+Bidders sign a bare root, so they rely on the site to build the tree they intended. The site should show the selection's contents, and the criteria that produced them, before the bidder signs.
 
-```text
-[ Trait 3 bitmap ][ Trait 2 bitmap ][ Trait 1 bitmap ][ Trait 0 bitmap ]
-```
+### Eligibility
 
-Each bitmap represents acceptable values for that trait slot. Bit `N` means value `N` is acceptable.
+Selection bids use the same per-token rule as listings and token bids: a token is eligible if its collection is allowed or the token itself is in `allowedTokens`.
 
-Matching semantics:
+- **At acceptance**, the token being sold is checked. A token that is not eligible cannot fill a bid, while the selection's other members stay fillable. If the token is allowed again, it can fill again.
+- **Placing, increasing, and extending** do not check the allowlist, because the contract does not know which tokens a selection contains. A selection can include tokens that are not eligible, and bids on it can still be placed. Those tokens simply cannot fill. The site should only build selections from eligible tokens and flag selections whose members have lost their allowed status.
 
-- Within a bitmap, values are ORed.
-- Across non-zero bitmaps, slots are ANDed.
-- A zero bitmap is a wildcard for that slot.
-- A required token trait slot without bit 7 set reverts with `TraitNotSet`.
-- A required token trait slot with a non-matching value reverts with `TraitMismatch` when the bid is accepted.
+### Gas
 
-A trait key of `0` is rejected because it is equivalent to a collection bid.
+Measured in `test_gasSelectionBidsByProofDepth` (run with `-vv` to print the figures). Each figure is the cost of a standalone transaction: the 21,000 base, calldata, and execution against cold storage, with no sanctions list configured.
 
-### Trait Matching Diagram
+| Operation | Gas |
+| --- | --- |
+| Place a token bid, for reference | ~78k |
+| Place a selection bid, any size | ~76k |
+| Accept a token bid, for reference | ~141k |
+| Accept a selection bid, proof depth 0 (1 token) | ~143k |
+| Accept, depth 7 (up to 128 tokens) | ~152k |
+| Accept, depth 10 (up to 1,024 tokens) | ~155k |
+| Accept, depth 14 (up to 16,384 tokens) | ~160k |
+| Accept, depth 17 (up to 131,072 tokens) | ~164k |
+| Accept, depth 20 (up to ~1M tokens) | ~168k |
 
-Trait bids are easiest to read as four independent filters. Each non-zero filter must match the token's corresponding initialized trait slot.
-
-```text
-traitKey uint256
-
-| bits 255..192      | bits 191..128      | bits 127..64       | bits 63..0         |
-| Trait 3 bitmap     | Trait 2 bitmap     | Trait 1 bitmap     | Trait 0 bitmap     |
-| wildcard if zero   | wildcard if zero   | acceptable values  | acceptable values  |
-```
-
-Example bid:
-
-```text
-Trait 0 bitmap: accepts value 5 or 9   = 0x0000000000000220
-Trait 1 bitmap: accepts value 12       = 0x0000000000001000
-Trait 2 bitmap: wildcard               = 0x0000000000000000
-Trait 3 bitmap: wildcard               = 0x0000000000000000
-
-traitKey =
-| 0x0000000000000000 | 0x0000000000000000 | 0x0000000000001000 | 0x0000000000000220 |
-```
-
-Matching token:
-
-```text
-tokenTraits uint32 = 0x00008C85
-
-| Trait 3 slot | Trait 2 slot | Trait 1 slot | Trait 0 slot |
-| 0x00         | 0x00         | 0x8C         | 0x85         |
-| ignored      | ignored      | init, 12     | init, 5      |
-```
-
-Matching result:
-
-```text
-Trait 0: key requires 5 OR 9; token has initialized 5   -> match
-Trait 1: key requires 12; token has initialized 12       -> match
-Trait 2: key is zero                                    -> wildcard
-Trait 3: key is zero                                    -> wildcard
-
-Final result: match, because every non-zero bitmap matched.
-```
-
-The same bid would fail if Trait 0 were initialized to value `4`, because value `4` is not in the Trait 0 bitmap. It would revert with `TraitNotSet` if Trait 0's initialized bit were unset.
-
-### Collection Trait Configuration
-
-Each collection has a `uint32` trait configuration that mirrors the token trait layout. Only bit 7 of each 8-bit segment matters. If bit 7 is set, that trait slot is enabled for the collection.
-
-When placing, increasing, extending, or accepting a trait bid, the marketplace validates that the trait key does not specify non-zero bitmaps for disabled trait slots. Updating a collection's trait configuration can therefore make existing trait bids unfillable and unextendable until the bidder cancels or the configuration changes again.
+A tree of `n` tokens has a proof depth of about `log2(n)`, and each level adds about 1.3k gas to acceptance. Placing a selection bid is slightly cheaper than a token bid because it reads no allowlist entry. Selections have no practical size limit.
 
 ## Sanctions Checks
 
@@ -386,8 +325,6 @@ The marketplace owner manages:
 
 - Collection allowlist.
 - Token allowlist for shared contracts.
-- Trait configuration.
-- Token trait data.
 - Pause state.
 - Royalty model address.
 - Sanctions list address.
@@ -399,7 +336,7 @@ The royalty model owner manages:
 - Token mint price overrides (USD), including clearing an override.
 - Sale currency registry and the price feeds backing it.
 
-Owner-managed trait data is trusted. The marketplace does not derive traits from token metadata or validate trait values beyond the compact encoding rules used for matching.
+The owner does not manage selections. The marketplace never sees trait data or a selection's contents; the mapping from traits to tokens, and storage of the trees, is the site's responsibility. The allowlist bounds which tokens can fill a selection bid.
 
 ## Known Limitations
 
@@ -408,16 +345,19 @@ Owner-managed trait data is trusted. The marketplace does not derive traits from
 - **ETH only**: ERC-20 payments are not supported by the marketplace. The royalty model is currency-aware ahead of this and can already price non-native currencies with their own decimals and feeds.
 - **Oracle dependence**: USD-denominated royalties require a live `<currency>/USD` feed. A feed outage degrades to the maximum royalty rather than blocking trades.
 - **No partial fills**: each accepted bid is consumed in full.
-- **One stored bid per key**: bidders can hold one collection bid per collection, one token bid per token, and one trait bid per trait key. Expired bids still occupy storage until canceled or extended.
-- **Four trait slots**: trait matching supports four slots with 64 possible values each.
+- **One stored bid per key**: bidders can hold one collection bid per collection, one token bid per token, and one selection bid per selection. Expired bids still occupy storage until canceled or extended.
+- **Offchain selection data**: a selection bid can only be filled with a proof built from the tree behind its root. If the tree is lost, the bid cannot be filled until the bidder cancels it.
+- **Immutable selections**: a root commits to a fixed set of tokens. A different set of tokens is a different selection with its own ID.
 - **Indexed reads required**: active offers are spread across bidder-keyed mappings and are not enumerable on-chain.
 
 ## Known Tradeoffs
 
 - **Full royalty fallback**: unconfigured royalty entries default to full royalties for positive sale prices instead of reverting. The same fallback applies when the sale price cannot be converted to USD (unregistered currency, or a stale, non-positive, or reverting feed answer), trading availability being preferred over an exact percentage.
 - **Live royalty resolution**: listings do not lock in a royalty amount. Seller proceeds on an open listing move with the ETH/USD rate, which is the cost of keeping the mint price pinned in USD.
-- **User-managed stale orders**: users, frontends, and indexers are expected to manage stale listings and stale bids. Fulfillment paths re-check ownership, approval, allowlist status, trait validity, expiration, sanctions status, and payment amount.
+- **User-managed stale orders**: users, frontends, and indexers are expected to manage stale listings and stale bids. Fulfillment paths re-check ownership, approval, allowlist status, selection membership, expiration, sanctions status, and payment amount.
 - **Re-approved orders can reactivate**: removing a collection or token blocks fulfillment while removed, but existing unexpired orders can become executable again if allowlisted later.
+- **Selection allowlist checks at fill only**: placing, increasing, and extending a selection bid do not check the allowlist, because the contract does not know the selection's contents. A selection can include tokens that are not eligible; those tokens cannot fill until allowed.
+- **Selections are snapshots**: a selection records token IDs, not the criteria that produced them. Trait-based selections are only correct for collections with frozen metadata.
 - **Fixed-gas ETH transfers**: ETH payouts use `call` with `100_000` gas. This supports normal EOAs and many smart wallets while bounding recipient execution, but recipients requiring more gas can cause their own payout path to revert.
 - **Current royalty recipient availability**: existing listings pay the royalty amount resolved at settlement to the recipient returned by the current royalty model. If that recipient cannot accept ETH within the fixed gas cap, settlement reverts.
 - **Allowed collection trust**: settlement uses `transferFrom` and assumes allowed ERC-721 collections behave correctly.
@@ -428,13 +368,14 @@ Owner-managed trait data is trusted. The marketplace does not derive traits from
 - **Contract buyers**: NFT transfers use `transferFrom`, so settlement does not call `onERC721Received`. Contract buyers are responsible for ensuring they can manage received NFTs.
 - **ETH payouts**: failed ETH sends revert settlement or cancellation. Contract sellers, bidders, or royalty recipients should be able to receive ETH within the gas cap.
 - **Sanctioned escrow**: sanctioned bidders cannot withdraw bid escrow until no longer sanctioned.
-- **Owner trust**: owners can pause trading, change allowlists, set traits, change the royalty model, change sanctions enforcement, and configure royalties, currencies, and price feeds.
+- **Owner trust**: owners can pause trading, change allowlists, change the royalty model, change sanctions enforcement, and configure royalties, currencies, and price feeds.
+- **Selection proofs**: membership is verified with OpenZeppelin's `MerkleProof` against double-hashed leaves, so internal nodes cannot be passed off as leaves. The contract cannot tell what a root contains; bidders trust the site to build the tree they intended, and an unrecoverable tree only makes a bid unfillable, never unrefundable.
 - **Marketplace royalty ceiling**: `LuciMarket` rejects any settlement where the royalty exceeds `MAX_ROYALTY_BPS` (10%) of the sale price, or where a positive royalty would be paid to the zero address. Both checks run in `_settleSale`, covering `buy` and `acceptBid`, and apply to any royalty model the owner configures.
 - **Oracle trust**: the royalty model calls an owner-configured price feed during settlement. A degraded feed, or a live `decimals()` change relative to configure time, falls back to the maximum royalty rather than reverting, and the royalty model owner can point a currency at any contract. The marketplace royalty ceiling bounds the impact.
 
 ### Audit
 
-`audit/Luci Market Contract Review.pdf` is an external review of the core trading, escrow, bid, allowlist, and sanctions logic. `audit/POST_AUDIT_CHANGES.md` records exactly which commit was reviewed and every `src/` change made since, including the USD royalty work, which has not been externally re-reviewed.
+`audit/Luci Market Contract Review.pdf` is an external review of the core trading, escrow, bid, allowlist, and sanctions logic. `audit/POST_AUDIT_CHANGES.md` records exactly which commit was reviewed and every `src/` change made since, including the USD royalty work and the replacement of trait bids with selection bids, neither of which has been externally re-reviewed.
 
 ## Indexing Considerations
 
@@ -443,8 +384,10 @@ The indexing layer should enrich on-chain events into a queryable model. Key res
 - Track listing state and current token ownership.
 - Hide listings where the stored seller no longer owns the token.
 - Optionally mark stale listings as active again if the original seller reacquires the token before expiry.
-- Aggregate token, collection, and trait bids for token and collection pages.
-- Resolve compact trait indices into human-readable trait names and values.
+- Aggregate token, collection, and selection bids for token and collection pages.
+- Store every Merkle tree the site builds, keyed by root, and serve proofs to sellers. A `BidPlaced` event with an unknown root is a selection the site cannot fill.
+- Index each tree's members, so a token page can list every selection bid that token can fill, and notify holders when one is placed.
+- Record which criteria produced each selection root for display.
 - Track sanctions and allowlist changes that affect order executability.
 - Read royalty amounts from `Sold` and `BidAccepted`. `Listed` no longer carries a royalty amount, because royalties are resolved at settlement rather than at listing time.
 

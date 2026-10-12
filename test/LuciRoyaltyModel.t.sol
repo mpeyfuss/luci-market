@@ -331,10 +331,9 @@ contract LuciRoyaltyModelTest is LuciTestBase {
         assertEq(royalty, Math.mulDiv(salePrice, 1_000, 10_000));
     }
 
-    function test_revertsWhenDecimalsRevert() public {
+    function test_fallsBackToMaxRoyaltyWhenDecimalsRevert() public {
         ethUsdFeed.setShouldRevertDecimals(true);
-        vm.expectRevert(MockAggregatorV3.MockAggregatorRevert.selector);
-        royaltyModel.calculateRoyalty(address(nft), TOKEN_ID, MINT_PRICE, NATIVE);
+        _assertMaxRoyaltyFallback();
     }
 
     function test_fallsBackToMaxRoyaltyWhenLiveDecimalsExceedMax() public {

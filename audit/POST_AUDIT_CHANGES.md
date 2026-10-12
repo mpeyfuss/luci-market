@@ -51,15 +51,15 @@ change to the contract's trust assumptions.
 - A feed outage, stale answer, or reverting feed falls back to the **maximum royalty (10%)** rather than
   reverting. Trading stays available and sellers pay the ceiling while the feed is degraded. This is the
   intended behavior: availability is preferred over precision, and the fallback never under-charges.
-- The oracle call is wrapped in `try/catch`. `catch` covers a revert from the call itself, not a failure
-  decoding its return data. `configureCurrency` makes no external calls; the feed's decimals are
-  owner-declared at configuration time. Conversion re-reads `decimals()` live and falls back to max
+- The `latestRoundData()` and `decimals()` calls are each wrapped in their own `try/catch`, so a revert
+  from either falls back to max royalty. `catch` covers a revert from the call itself, not a failure
+  decoding its return data, so an oracle that returns malformed data still reverts settlement until the
+  currency is reconfigured or removed. `configureCurrency` makes no external calls; the feed's decimals
+  are owner-declared at configuration time. Conversion re-reads `decimals()` live and falls back to max
   royalty if they differ from the declared value, so a wrong declaration or a scale change without a
   matching `answer` rescaling cannot under-charge. An `answer` that would overflow
   `answer * 10**USD_DECIMALS`, or a converted USD value that would overflow `uint256`, is treated as a
-  failed conversion (max royalty) rather than reverting settlement. A revert from live `decimals()` after
-  a successful round is not caught and reverts settlement, so an oracle that does not fully follow the
-  aggregator interface carries a slight chance of blocking trading until the currency is reconfigured.
+  failed conversion (max royalty) rather than reverting settlement.
 - `MAX_CURRENCY_DECIMALS` (18) matches real currencies and Chainlink feeds. The bound is enforced at
   configuration time for the currency and the feed.
 
@@ -101,15 +101,89 @@ configures, bounding both the widened owner surface above and any future `setRoy
 
 `list()` performs no royalty check, because it no longer calls the royalty model.
 
+### Listing extension requires current ownership
+
+`extendListings` now checks, for each token, that the caller still owns it and that the marketplace is
+still approved, matching the checks in `list`. Previously only the stored seller was checked, so a seller
+could extend a stale listing for a token they had transferred away, keeping it alive in case they later
+reacquired the token. A stale listing can still become fillable if the seller reacquires the token before
+the listing's existing expiry, but it can no longer be extended past that.
+
+### Trait bids replaced by selection bids
+
+Trait bids are removed entirely. In their place, **selection bids** are escrowed ETH bids on an explicit set
+of tokens committed to by a Merkle root. Any holder of a token in the set can accept one, and a set can span
+multiple collections. The contract no longer stores traits or selection contents: the site resolves traits
+offchain, builds the tree, stores it, and serves proofs to sellers.
+
+How it works:
+
+- `selectionRoot` is the selection's Merkle root. Leaves follow the OpenZeppelin standard Merkle tree format,
+  `keccak256(bytes.concat(keccak256(abi.encode(collection, tokenId))))`, with sorted-pair hashing, verified
+  with OpenZeppelin's `MerkleProof`. A zero root is rejected with `InvalidSelection`.
+- `placeBid` with `BidType.SELECTION` stores the bid keyed by bidder and root. There is no creation step.
+- `acceptBid` gained a trailing `bytes32[] proof` argument. For a selection bid it verifies that the sold
+  token is in the selection, right after the allowlist check and before the bid lookup, so an invalid proof
+  reverts with `TokenNotInSelection` ahead of `NoBidExists`, `BidExpired`, and `BidTooLow`. Token and
+  collection bids ignore the proof and pass an empty array. All checks still run before any effects or
+  interactions, which are unchanged in order.
+- `isInSelection(selectionRoot, collection, tokenId, proof)` exposes the proof check as a view.
+
+Eligibility semantics:
+
+- The allowlist rule is per token, the same as listings and token bids: a token's collection must be allowed,
+  or the token must be individually allowed. It is checked for the sold token when a bid is accepted.
+- Placing, increasing, and extending a selection bid do **not** check the allowlist, because the contract
+  does not know a selection's contents. This differs from token and collection bids, where those operations
+  do check. Fulfillment is still gated per token.
+- Individually allowed tokens are now eligible for selection bids. They were not eligible for trait bids,
+  and they remain ineligible for collection bids.
+
+Public interface changes:
+
+- `BidType.TRAIT` is replaced by `BidType.SELECTION` (same ordinal, 2).
+- `BidSelector.traitKey` (`uint256`) is replaced by `BidSelector.selectionRoot` (`bytes32`). The same change
+  applies to the `traitKey` field of `BidPlaced`, `BidIncreased`, `BidExtended`, `BidCanceled`, and
+  `BidAccepted`. Selection bid events emit `address(0)` as `collection`, except `BidAccepted`, which emits
+  the sold token's collection.
+- `acceptBid(bidSelector, bidder, minAmount)` becomes `acceptBid(bidSelector, bidder, minAmount, proof)`.
+- Added: `isInSelection`, `selectionBids`, and the `InvalidSelection` and
+  `TokenNotInSelection` errors.
+- Removed: `setCollectionTraitsConfig`, `setTraits`, `tokenTraits`, `collectionTraitConfigs`, `traitBids`,
+  the `CollectionTraitConfigSet` and `TraitsSet` events, and the `InvalidTraitKey`, `TraitMismatch`,
+  `TraitNotSet`, and `ArrayLengthMismatch` errors. `script/pack_traits.py` and its tests and Makefile
+  targets are removed.
+- The Solady `LibMap` import is replaced by OpenZeppelin's `MerkleProof`.
+
+Change in trust assumptions:
+
+- **Owner surface shrinks.** The owner no longer writes trait data that bids settle against, so a
+  compromised owner key can no longer redirect trait bids by rewriting traits.
+- **Bidders trust the site's tree.** A bidder signs a bare root. The contract cannot show or check what it
+  contains, so the bidder relies on the site to build the tree they intended.
+- **Offchain data availability.** If the tree behind a root is lost, the bid cannot be filled. Escrow is not
+  at risk, because the bidder can always cancel.
+- **Offchain correctness.** Whether a selection matches a trait is the site's responsibility. Because a
+  selection is a snapshot of token IDs, the site must not offer trait-based selections for collections whose
+  metadata can still change.
+
+Listings, token bids, collection bids, royalties, settlement, and sanctions are unchanged by this work.
+
 ## Review Status
 
-The core trading, escrow, bid, allowlist, and sanctions logic covered by the report is unchanged. The
-post-audit changes above were reviewed internally with automated analysis rather than sent for external
-re-review, which is sufficient for a change of this scope against an audited core.
+Token bid, collection bid, settlement, allowlist, and sanctions logic covered by the report is
+unchanged. Listing logic is unchanged except for the ownership and approval checks added to
+`extendListings`. The audited trait bid path has been removed and replaced by selection bids, which reuse the
+audited bid lifecycle (escrow, expiry, `minAmount`, listing clearing, settlement) and add only a Merkle
+proof check. The post-audit changes above were reviewed internally with automated
+analysis rather than sent for external re-review.
 
 Verification performed on the post-audit state:
 
-- Full Foundry suite passing, including fuzz and invariant runs.
+- Full Foundry suite passing (123 tests), including fuzz (10,000 runs, with Merkle proofs over random
+  cross-collection token sets checked against a reference) and invariant runs. Roots and proofs are also
+  checked against a vector generated by `@openzeppelin/merkle-tree`.
 - 100% line, statement, branch, and function coverage on both `src/` contracts.
 - Slither clean. The two reported findings (`arbitrary-send-eth`, `unused-return`) are reviewed false
-  positives; see the Security Considerations section of the README.
+  positives; see the Security Considerations section of the README. Selection bids add no new detector
+  categories and no findings in the new code.

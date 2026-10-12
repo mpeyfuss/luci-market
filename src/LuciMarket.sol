@@ -5,19 +5,16 @@ import {Ownable2Step, Ownable} from "@openzeppelin-contracts-5.6.1/access/Ownabl
 import {ReentrancyGuardTransient} from "@openzeppelin-contracts-5.6.1/utils/ReentrancyGuardTransient.sol";
 import {IERC721} from "@openzeppelin-contracts-5.6.1/token/ERC721/IERC721.sol";
 import {Math} from "@openzeppelin-contracts-5.6.1/utils/math/Math.sol";
-import {LibMap} from "solady-0.1.26/utils/LibMap.sol";
+import {MerkleProof} from "@openzeppelin-contracts-5.6.1/utils/cryptography/MerkleProof.sol";
 import {LuciRoyaltyModel} from "./LuciRoyaltyModel.sol";
 import {ISanctionsList} from "./interfaces/ISanctionsList.sol";
 
 /// @title Luci Market
 /// @notice A simple, onchain marketplace for buying and selling allowlisted ERC721 tokens
-/// @dev Supports listings, collection bids, token bids, and trait bids
+/// @dev Supports listings, collection bids, token bids, and selection bids
 /// @author mpeyfuss
-/// @author rhynotic
 /// @author Sam Spratt
 contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
-    using LibMap for LibMap.Uint32Map;
-
     /////////////////////////////////////////////////////////////////////
     // TYPES
     /////////////////////////////////////////////////////////////////////
@@ -42,14 +39,14 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
     enum BidType {
         TOKEN,
         COLLECTION,
-        TRAIT
+        SELECTION
     }
 
     struct BidSelector {
         BidType bidType;
         address collection;
         uint256 tokenId;
-        uint256 traitKey;
+        bytes32 selectionRoot;
     }
 
     /////////////////////////////////////////////////////////////////////
@@ -80,11 +77,8 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
     /// @notice Collections that can be traded
     mapping(address collection => bool) public allowedCollections;
 
-    /// @notice Token override for shared contracts - these tokens are not eligible for collection/trait bids
+    /// @notice Token override for shared contracts - these tokens are not eligible for collection bids
     mapping(address collection => mapping(uint256 tokenId => bool)) public allowedTokens;
-
-    /// @notice Collections trait config
-    mapping(address collection => uint32) public collectionTraitConfigs;
 
     /// @notice Listings: collection => tokenId => Listing
     mapping(address collection => mapping(uint256 tokenId => Listing)) public listings;
@@ -95,11 +89,8 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
     /// @notice Token bids: bidder => collection => tokenId => Bid
     mapping(address bidder => mapping(address collection => mapping(uint256 tokenId => Bid))) public tokenBids;
 
-    /// @notice Trait bids: bidder => collection => traitKey => Bid
-    mapping(address bidder => mapping(address collection => mapping(uint256 traitKey => Bid))) public traitBids;
-
-    /// @notice Token traits: collection => tokenId => encoded traits
-    mapping(address collection => LibMap.Uint32Map) private _tokenTraits;
+    /// @notice Selection bids: bidder => selectionRoot (Merkle root of the selected tokens) => Bid
+    mapping(address bidder => mapping(bytes32 selectionRoot => Bid)) public selectionBids;
 
     /////////////////////////////////////////////////////////////////////
     // EVENTS
@@ -128,7 +119,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         address indexed collection,
         address indexed bidder,
         uint256 tokenId,
-        uint256 traitKey,
+        bytes32 selectionRoot,
         uint256 amount,
         uint64 expiresAt
     );
@@ -137,7 +128,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         address indexed collection,
         address indexed bidder,
         uint256 tokenId,
-        uint256 traitKey,
+        bytes32 selectionRoot,
         uint256 newAmount
     );
     event BidExtended(
@@ -145,18 +136,22 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         address indexed collection,
         address indexed bidder,
         uint256 tokenId,
-        uint256 traitKey,
+        bytes32 selectionRoot,
         uint64 newExpiresAt
     );
     event BidCanceled(
-        BidType indexed bidType, address indexed collection, address indexed bidder, uint256 tokenId, uint256 traitKey
+        BidType indexed bidType,
+        address indexed collection,
+        address indexed bidder,
+        uint256 tokenId,
+        bytes32 selectionRoot
     );
     event BidAccepted(
         BidType indexed bidType,
         address indexed collection,
         address indexed bidder,
         uint256 tokenId,
-        uint256 traitKey,
+        bytes32 selectionRoot,
         address seller,
         uint256 price,
         uint256 royaltyAmount
@@ -164,8 +159,6 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
 
     event CollectionAdded(address indexed collection);
     event CollectionRemoved(address indexed collection);
-    event CollectionTraitConfigSet(address indexed collection, uint32 config);
-    event TraitsSet(address indexed collection, uint256[] tokenIds, uint32[] traits);
     event PauseToggled(bool paused);
     event RoyaltyModelUpdated(address indexed oldRoyaltyModel, address indexed newRoyaltyModel);
     event SanctionsListUpdated(address indexed oldSanctionsList, address indexed newSanctionsList);
@@ -176,7 +169,6 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
     // ERRORS
     /////////////////////////////////////////////////////////////////////
 
-    error ArrayLengthMismatch();
     error BidAlreadyExists();
     error BidExpired();
     error BidTooLow();
@@ -187,7 +179,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
     error InvalidListingExpiration();
     error InvalidPrice();
     error InvalidRoyaltyAmount();
-    error InvalidTraitKey();
+    error InvalidSelection();
     error IsPaused();
     error ListingExpired();
     error NotApproved();
@@ -197,8 +189,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
     error NotPrivateBuyer();
     error NotTokenOwner();
     error Sanctioned();
-    error TraitMismatch();
-    error TraitNotSet();
+    error TokenNotInSelection();
     error ZeroAddress();
     error ZeroLengthArray();
 
@@ -253,6 +244,8 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
     /// @notice Extend listing(s)
     /// @dev Compatible with batch operations for UX benefits and allows extended expired listings
     /// @dev Extends all token listings to `expiresAt` for simplicity
+    /// @dev Requires the seller to still own and have approved each token, matching `list`, so a stale listing left
+    ///      behind after a transfer cannot be kept alive
     function extendListings(Token[] calldata tokens, uint64 expiresAt) external nonReentrant whenNotPaused {
         // checks
         _checkSanctionsList(msg.sender);
@@ -268,6 +261,10 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
             _checkCollectionOrTokenAllowed(token.collection, token.tokenId);
             Listing storage listing = listings[token.collection][token.tokenId];
             if (listing.seller != msg.sender) revert NotListingOwner(); // this is triggered if the token isn't listed
+
+            IERC721 nft = IERC721(token.collection);
+            if (nft.ownerOf(token.tokenId) != msg.sender) revert NotTokenOwner();
+            if (!_isApproved(nft, msg.sender, token.tokenId)) revert NotApproved();
 
             listing.expiresAt = expiresAt;
 
@@ -317,7 +314,10 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
     // BID FUNCTIONS
     /////////////////////////////////////////////////////////////////////
 
-    /// @notice Place a token, collection, or trait bid
+    /// @notice Place a token, collection, or selection bid
+    /// @dev A selection bid's `selectionRoot` is the Merkle root of the selected tokens (see `isInSelection` for the
+    ///      leaf format). The contract does not know a selection's contents, so eligibility is checked per token
+    ///      when the bid is accepted.
     /// @param bidSelector The bid type and its identifying fields
     /// @param expiresAt Expiry timestamp (0 = no expiry)
     function placeBid(BidSelector calldata bidSelector, uint64 expiresAt) external payable nonReentrant whenNotPaused {
@@ -343,22 +343,17 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
             collectionBids[msg.sender][bidSelector.collection] = Bid({amount: uint192(msg.value), expiresAt: expiresAt});
             emit BidPlaced(BidType.COLLECTION, bidSelector.collection, msg.sender, 0, 0, msg.value, expiresAt);
         } else {
-            _checkCollectionAllowed(bidSelector.collection);
-            if (!_validateTraitKey(bidSelector.traitKey, collectionTraitConfigs[bidSelector.collection])) {
-                revert InvalidTraitKey();
-            }
-            if (traitBids[msg.sender][bidSelector.collection][bidSelector.traitKey].amount > 0) {
-                revert BidAlreadyExists();
-            }
-            traitBids[msg.sender][bidSelector.collection][bidSelector.traitKey] =
+            if (bidSelector.selectionRoot == bytes32(0)) revert InvalidSelection();
+            if (selectionBids[msg.sender][bidSelector.selectionRoot].amount > 0) revert BidAlreadyExists();
+            selectionBids[msg.sender][bidSelector.selectionRoot] =
                 Bid({amount: uint192(msg.value), expiresAt: expiresAt});
             emit BidPlaced(
-                BidType.TRAIT, bidSelector.collection, msg.sender, 0, bidSelector.traitKey, msg.value, expiresAt
+                BidType.SELECTION, address(0), msg.sender, 0, bidSelector.selectionRoot, msg.value, expiresAt
             );
         }
     }
 
-    /// @notice Increase an existing token, collection, or trait bid
+    /// @notice Increase an existing token, collection, or selection bid
     /// @dev Prevents increasing an expired bid
     /// @param bidSelector The bid type and its identifying fields
     function increaseBid(BidSelector calldata bidSelector) external payable nonReentrant whenNotPaused {
@@ -384,79 +379,75 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
             collectionBid.amount += uint192(msg.value);
             emit BidIncreased(BidType.COLLECTION, bidSelector.collection, msg.sender, 0, 0, collectionBid.amount);
         } else {
-            _checkCollectionAllowed(bidSelector.collection);
-            if (!_validateTraitKey(bidSelector.traitKey, collectionTraitConfigs[bidSelector.collection])) {
-                revert InvalidTraitKey();
-            }
-            Bid storage traitBid = traitBids[msg.sender][bidSelector.collection][bidSelector.traitKey];
-            if (traitBid.amount == 0) revert NoBidExists();
-            _checkBidNotExpired(traitBid.expiresAt);
-            traitBid.amount += uint192(msg.value);
+            Bid storage selectionBid = selectionBids[msg.sender][bidSelector.selectionRoot];
+            if (selectionBid.amount == 0) revert NoBidExists();
+            _checkBidNotExpired(selectionBid.expiresAt);
+            selectionBid.amount += uint192(msg.value);
             emit BidIncreased(
-                BidType.TRAIT, bidSelector.collection, msg.sender, 0, bidSelector.traitKey, traitBid.amount
+                BidType.SELECTION, address(0), msg.sender, 0, bidSelector.selectionRoot, selectionBid.amount
             );
         }
     }
 
-    /// @notice Accept a token, collection, or trait bid by selling an NFT to the bidder
+    /// @notice Accept a token, collection, or selection bid by selling an NFT to the bidder
     /// @dev Frontrunning is prevented with `minAmount`
-    /// @param bidSelector The bid type, collection, fulfillment token id, and optional trait key
+    /// @dev For selection bids, `proof` must show that `(collection, tokenId)` is in the selection. A single-token
+    ///      selection takes an empty proof. Token and collection bids ignore `proof`; pass an empty array.
+    /// @param bidSelector The bid type, collection, fulfillment token id, and optional selection root
     /// @param bidder The address that placed the bid
     /// @param minAmount The minimum acceptable bid amount
-    function acceptBid(BidSelector calldata bidSelector, address bidder, uint256 minAmount)
+    /// @param proof Merkle proof of selection membership (selection bids only)
+    function acceptBid(BidSelector calldata bidSelector, address bidder, uint256 minAmount, bytes32[] calldata proof)
         external
         nonReentrant
         whenNotPaused
     {
+        BidSelector memory selector = bidSelector; // one calldata decode instead of one per field read
         // checks
         _checkSanctionsList(msg.sender);
         _checkSanctionsList(bidder);
         Bid memory bid;
-        if (bidSelector.bidType == BidType.TOKEN) {
-            _checkCollectionOrTokenAllowed(bidSelector.collection, bidSelector.tokenId);
-            bid = tokenBids[bidder][bidSelector.collection][bidSelector.tokenId];
-        } else if (bidSelector.bidType == BidType.COLLECTION) {
-            _checkCollectionAllowed(bidSelector.collection);
-            bid = collectionBids[bidder][bidSelector.collection];
+        if (selector.bidType == BidType.TOKEN) {
+            _checkCollectionOrTokenAllowed(selector.collection, selector.tokenId);
+            bid = tokenBids[bidder][selector.collection][selector.tokenId];
+        } else if (selector.bidType == BidType.COLLECTION) {
+            _checkCollectionAllowed(selector.collection);
+            bid = collectionBids[bidder][selector.collection];
         } else {
-            _checkCollectionAllowed(bidSelector.collection);
-            bid = traitBids[bidder][bidSelector.collection][bidSelector.traitKey];
+            _checkCollectionOrTokenAllowed(selector.collection, selector.tokenId);
+            if (!_isInSelection(selector.selectionRoot, selector.collection, selector.tokenId, proof)) {
+                revert TokenNotInSelection();
+            }
+            bid = selectionBids[bidder][selector.selectionRoot];
         }
         if (bid.amount == 0) revert NoBidExists();
         _checkBidNotExpired(bid.expiresAt);
         if (bid.amount < minAmount) revert BidTooLow();
-        if (bidSelector.bidType == BidType.TRAIT) {
-            if (!_validateTraitKey(bidSelector.traitKey, collectionTraitConfigs[bidSelector.collection])) {
-                revert InvalidTraitKey();
-            }
-            uint32 traits = _tokenTraits[bidSelector.collection].get(bidSelector.tokenId);
-            if (!_matchesTraitBid(traits, bidSelector.traitKey)) revert TraitMismatch();
-        }
 
-        IERC721 nft = IERC721(bidSelector.collection);
+        IERC721 nft = IERC721(selector.collection);
 
         // effects
-        if (bidSelector.bidType == BidType.TOKEN) {
-            delete tokenBids[bidder][bidSelector.collection][bidSelector.tokenId];
-        } else if (bidSelector.bidType == BidType.COLLECTION) {
-            delete collectionBids[bidder][bidSelector.collection];
+        if (selector.bidType == BidType.TOKEN) {
+            delete tokenBids[bidder][selector.collection][selector.tokenId];
+        } else if (selector.bidType == BidType.COLLECTION) {
+            delete collectionBids[bidder][selector.collection];
         } else {
-            delete traitBids[bidder][bidSelector.collection][bidSelector.traitKey];
+            delete selectionBids[bidder][selector.selectionRoot];
         }
-        _clearListing(bidSelector.collection, bidSelector.tokenId); // avoids stale listing attack
+        _clearListing(selector.collection, selector.tokenId); // avoids stale listing attack
 
         // interactions
         (address royaltyRecipient, uint256 royaltyAmount) =
-            _getRoyaltyInfo(bidSelector.collection, bidSelector.tokenId, bid.amount);
-        _settleSale(nft, bidSelector.tokenId, msg.sender, bidder, bid.amount, royaltyRecipient, royaltyAmount);
+            _getRoyaltyInfo(selector.collection, selector.tokenId, bid.amount);
+        _settleSale(nft, selector.tokenId, msg.sender, bidder, bid.amount, royaltyRecipient, royaltyAmount);
 
-        uint256 traitKey = bidSelector.bidType == BidType.TRAIT ? bidSelector.traitKey : 0;
+        bytes32 selectionRoot = selector.bidType == BidType.SELECTION ? selector.selectionRoot : bytes32(0);
         emit BidAccepted(
-            bidSelector.bidType,
-            bidSelector.collection,
+            selector.bidType,
+            selector.collection,
             bidder,
-            bidSelector.tokenId,
-            traitKey,
+            selector.tokenId,
+            selectionRoot,
             msg.sender,
             bid.amount,
             royaltyAmount
@@ -470,7 +461,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
     /// @notice Extend bid(s)
     /// @dev Allows extending expired bids rather than canceling and re-bidding
     /// @dev All bids share the same `expiresAt` for simplicity
-    /// @dev Trait bids re-validate the trait key against the current collection config, matching place/increase/accept
+    /// @dev Selection bids are not re-checked against the allowlist here; eligibility is enforced per token on acceptance
     function extendBids(BidSelector[] calldata bidSelectors, uint64 expiresAt) external nonReentrant whenNotPaused {
         // checks
         _checkSanctionsList(msg.sender);
@@ -496,15 +487,11 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
                 collectionBid.expiresAt = expiresAt;
                 emit BidExtended(BidType.COLLECTION, bs.collection, msg.sender, 0, 0, expiresAt);
             } else {
-                // trait bid
-                _checkCollectionAllowed(bs.collection);
-                if (!_validateTraitKey(bs.traitKey, collectionTraitConfigs[bs.collection])) {
-                    revert InvalidTraitKey();
-                }
-                Bid storage traitBid = traitBids[msg.sender][bs.collection][bs.traitKey];
-                if (traitBid.amount == 0) revert NoBidExists();
-                traitBid.expiresAt = expiresAt;
-                emit BidExtended(BidType.TRAIT, bs.collection, msg.sender, 0, bs.traitKey, expiresAt);
+                // selection bid
+                Bid storage selectionBid = selectionBids[msg.sender][bs.selectionRoot];
+                if (selectionBid.amount == 0) revert NoBidExists();
+                selectionBid.expiresAt = expiresAt;
+                emit BidExtended(BidType.SELECTION, address(0), msg.sender, 0, bs.selectionRoot, expiresAt);
             }
         }
     }
@@ -529,8 +516,8 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
                 // collection bid
                 totalBidAmount += _cancelCollectionBid(msg.sender, bs.collection);
             } else {
-                // trait bid
-                totalBidAmount += _cancelTraitBid(msg.sender, bs.collection, bs.traitKey);
+                // selection bid
+                totalBidAmount += _cancelSelectionBid(msg.sender, bs.selectionRoot);
             }
         }
 
@@ -560,13 +547,15 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         emit CollectionRemoved(collection);
     }
 
-    /// @notice Add a shared collection token to the allowlist
+    /// @notice Add a shared collection token to the token allowlist
+    /// @dev Only needed for tokens whose collection is not allowed
     function addToken(address collection, uint256 tokenId) external onlyOwner {
         allowedTokens[collection][tokenId] = true;
         emit TokenAdded(collection, tokenId);
     }
 
-    /// @notice Remove a shared collection token to the allowlist
+    /// @notice Remove a shared collection token from the token allowlist
+    /// @dev Not a blocklist - a token in an allowed collection stays tradable after removal
     function removeToken(address collection, uint256 tokenId) external onlyOwner {
         allowedTokens[collection][tokenId] = false;
         emit TokenRemoved(collection, tokenId);
@@ -588,40 +577,19 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         emit SanctionsListUpdated(oldSanctionsList, newSanctionsList);
     }
 
-    /// @notice Set a collection trait config (which traits are allowed)
-    /// @dev Since this is a priveledged function, it's expected that only bit 7 is used to enable/disable collection traits as all other bits are ignored anyways.
-    function setCollectionTraitsConfig(address collection, uint32 config) external onlyOwner {
-        if (!allowedCollections[collection]) revert CollectionNotAllowed();
-        collectionTraitConfigs[collection] = config;
-
-        emit CollectionTraitConfigSet(collection, config);
-    }
-
-    /// @notice Batch set traits for tokens in a collection
-    /// @dev Since this is a priveledged function, it's expected that the traits include the properly
-    ///      configured bit 7 for each trait in the encoded traits
-    function setTraits(address collection, uint256[] calldata tokenIds, uint32[] calldata traitsArray)
-        external
-        onlyOwner
-    {
-        if (!allowedCollections[collection]) revert CollectionNotAllowed();
-        if (tokenIds.length != traitsArray.length) revert ArrayLengthMismatch();
-
-        uint256 num = tokenIds.length;
-        for (uint256 i = 0; i < num; ++i) {
-            _tokenTraits[collection].set(tokenIds[i], traitsArray[i]);
-        }
-
-        emit TraitsSet(collection, tokenIds, traitsArray);
-    }
-
     /////////////////////////////////////////////////////////////////////
     // VIEW FUNCTIONS
     /////////////////////////////////////////////////////////////////////
 
-    /// @notice Get the encoded traits for a collection token
-    function tokenTraits(address collection, uint256 tokenId) external view returns (uint32) {
-        return _tokenTraits[collection].get(tokenId);
+    /// @notice Whether a Merkle proof shows a token is in a selection
+    /// @dev Membership only - does not check the allowlist. Leaves follow the OpenZeppelin standard Merkle tree
+    ///      format: `keccak256(bytes.concat(keccak256(abi.encode(collection, tokenId))))`, with sorted-pair hashing.
+    function isInSelection(bytes32 selectionRoot, address collection, uint256 tokenId, bytes32[] calldata proof)
+        external
+        pure
+        returns (bool)
+    {
+        return _isInSelection(selectionRoot, collection, tokenId, proof);
     }
 
     /////////////////////////////////////////////////////////////////////
@@ -666,29 +634,14 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         if (expiresAt != 0 && block.timestamp > expiresAt) revert BidExpired();
     }
 
-    /// @dev Validates that a trait key only specifies enabled traits
-    function _validateTraitKey(uint256 traitKey, uint32 collectionTraitConfig) internal pure returns (bool) {
-        if (traitKey == 0) return false;
-        for (uint256 i = 0; i < 4; ++i) {
-            uint64 bitmap = uint64(traitKey >> (i * 64));
-            bool slotEnabled = uint8(collectionTraitConfig >> (i * 8)) & 0x80 != 0; // 0x80 == b10000000
-            if (bitmap != 0 && !slotEnabled) return false; // bidding on disabled slot not allowed
-        }
-        return true;
-    }
-
-    /// @dev Check if a token's trait matches a trait bid key
-    function _matchesTraitBid(uint32 traits, uint256 traitKey) internal pure returns (bool) {
-        for (uint256 i = 0; i < 4; ++i) {
-            uint64 bitmap = uint64(traitKey >> (i * 64));
-            if (bitmap == 0) continue; // wildcard
-            uint8 trait = uint8(traits >> (i * 8));
-            if (trait & 0x80 == 0) revert TraitNotSet();
-            uint8 index = trait & 0x3F; // bitwise AND with b00111111 to get the bottom 6 bits only
-            if (bitmap >> index & 1 == 0) return false; // shift bitmap down the steps to see if that slot is set to 1, which matches the token trait
-        }
-        // if gets here, the token has a desired trait from each trait.
-        return true;
+    /// @dev Merkle membership check for a selection
+    function _isInSelection(bytes32 selectionRoot, address collection, uint256 tokenId, bytes32[] calldata proof)
+        internal
+        pure
+        returns (bool)
+    {
+        bytes32 leaf = keccak256(bytes.concat(keccak256(abi.encode(collection, tokenId))));
+        return MerkleProof.verifyCalldata(proof, selectionRoot, leaf);
     }
 
     /// @dev Clears a listing
@@ -738,17 +691,14 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         emit BidCanceled(BidType.COLLECTION, collection, sender, 0, 0);
     }
 
-    /// @dev Cancel a trait bid and withdraw funds
-    function _cancelTraitBid(address sender, address collection, uint256 traitKey)
-        internal
-        returns (uint192 bidAmount)
-    {
-        bidAmount = traitBids[sender][collection][traitKey].amount;
+    /// @dev Cancel a selection bid and withdraw funds
+    function _cancelSelectionBid(address sender, bytes32 selectionRoot) internal returns (uint192 bidAmount) {
+        bidAmount = selectionBids[sender][selectionRoot].amount;
         if (bidAmount == 0) revert NoBidExists();
 
-        delete traitBids[sender][collection][traitKey];
+        delete selectionBids[sender][selectionRoot];
 
-        emit BidCanceled(BidType.TRAIT, collection, sender, 0, traitKey);
+        emit BidCanceled(BidType.SELECTION, address(0), sender, 0, selectionRoot);
     }
 
     /// @dev Get the current royalty recipient and royalty amount for a sale

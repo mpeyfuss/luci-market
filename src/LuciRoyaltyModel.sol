@@ -239,7 +239,12 @@ contract LuciRoyaltyModel is Ownable2Step {
         ) {
             if (!_isUsableRound(answer, updatedAt, config.maxAge)) return (0, false);
 
-            if (IAggregatorV3(config.oracle).decimals() != config.oracleDecimals) return (0, false);
+            // a revert inside a `try` success block is not caught by its `catch`, so `decimals()` gets its own guard
+            try IAggregatorV3(config.oracle).decimals() returns (uint8 liveDecimals) {
+                if (liveDecimals != config.oracleDecimals) return (0, false);
+            } catch {
+                return (0, false);
+            }
 
             uint256 scale = uint256(answer) * 10 ** USD_DECIMALS;
             uint256 denominator = 10 ** uint256(config.currencyDecimals) * 10 ** uint256(config.oracleDecimals);

@@ -4,7 +4,7 @@ pragma solidity 0.8.30;
 import {LuciMarket} from "../src/LuciMarket.sol";
 import {LuciRoyaltyModel} from "../src/LuciRoyaltyModel.sol";
 import {LuciTestBase} from "./LuciTestBase.sol";
-import {RejectEthActor, ReenteringBuyer} from "./mocks/MarketplaceMocks.sol";
+import {MockERC721, RejectEthActor, ReenteringBuyer} from "./mocks/MarketplaceMocks.sol";
 
 contract LuciMarketIntegrationTest is LuciTestBase {
     function test_buyPublicListingTransfersNftClearsListingAndSplitsEth() public {
@@ -128,7 +128,7 @@ contract LuciMarketIntegrationTest is LuciTestBase {
         royaltyModel.configureCollection(address(nft), uint192(PRICE));
 
         vm.prank(seller);
-        market.acceptBid(_tokenBid(TOKEN_ID), bidder, PRICE);
+        market.acceptBid(_tokenBid(TOKEN_ID), bidder, PRICE, _noProof());
 
         assertEq(seller.balance, sellerBefore + PRICE);
         assertEq(royaltyRecipient.balance, 0);
@@ -145,7 +145,7 @@ contract LuciMarketIntegrationTest is LuciTestBase {
         vm.expectEmit(true, true, true, true, address(market));
         emit LuciMarket.BidAccepted(LuciMarket.BidType.TOKEN, address(nft), bidder, TOKEN_ID, 0, seller, PRICE, 1 ether);
         vm.prank(seller);
-        market.acceptBid(_tokenBid(TOKEN_ID), bidder, PRICE);
+        market.acceptBid(_tokenBid(TOKEN_ID), bidder, PRICE, _noProof());
 
         assertEq(nft.ownerOf(TOKEN_ID), bidder);
         assertEq(seller.balance, sellerBefore + 9 ether);
@@ -168,7 +168,7 @@ contract LuciMarketIntegrationTest is LuciTestBase {
 
         vm.expectRevert(LuciMarket.Sanctioned.selector);
         vm.prank(seller);
-        market.acceptBid(_tokenBid(TOKEN_ID), bidder, PRICE);
+        market.acceptBid(_tokenBid(TOKEN_ID), bidder, PRICE, _noProof());
 
         assertEq(nft.ownerOf(TOKEN_ID), seller);
         assertEq(seller.balance, sellerBefore);
@@ -187,7 +187,7 @@ contract LuciMarketIntegrationTest is LuciTestBase {
             LuciMarket.BidType.COLLECTION, address(nft), bidder, TOKEN_ID, 0, seller, PRICE, 1 ether
         );
         vm.prank(seller);
-        market.acceptBid(_collectionBid(TOKEN_ID), bidder, PRICE);
+        market.acceptBid(_collectionBid(TOKEN_ID), bidder, PRICE, _noProof());
 
         assertEq(nft.ownerOf(TOKEN_ID), bidder);
         (uint192 bidAmount,) = market.collectionBids(bidder, address(nft));
@@ -195,59 +195,54 @@ contract LuciMarketIntegrationTest is LuciTestBase {
         assertEq(address(market).balance, 0);
     }
 
-    function test_acceptTraitBidTransfersNftAndDeletesBid() public {
-        uint32 config = _traitConfig(0) | _traitConfig(1);
-        uint32 tokenTraits = _trait(0, 5) | _trait(1, 7);
-        uint256 traitKey = _traitKey(0, 5) | _traitKey(1, 7);
-
-        vm.prank(owner);
-        market.setCollectionTraitsConfig(address(nft), config);
-
-        uint256[] memory tokenIds = new uint256[](1);
-        uint32[] memory traitsArray = new uint32[](1);
-        tokenIds[0] = TOKEN_ID;
-        traitsArray[0] = tokenTraits;
-        vm.prank(owner);
-        market.setTraits(address(nft), tokenIds, traitsArray);
-
-        _placeTraitBid(traitKey, PRICE);
+    function test_acceptSelectionBidTransfersNftClearsBidAndClearsListing() public {
+        _list(TOKEN_ID, PRICE + 1 ether, address(0));
+        LuciMarket.Token[] memory tokens = _tokens(address(nft), TOKEN_ID, TOKEN_ID_TWO);
+        bytes32 selectionRoot = _merkleRoot(tokens);
+        _placeSelectionBid(selectionRoot, PRICE);
+        uint256 sellerBefore = seller.balance;
+        uint256 recipientBefore = royaltyRecipient.balance;
 
         vm.expectEmit(true, true, true, true, address(market));
+        emit LuciMarket.Delisted(address(nft), TOKEN_ID, seller);
+        vm.expectEmit(true, true, true, true, address(market));
         emit LuciMarket.BidAccepted(
-            LuciMarket.BidType.TRAIT, address(nft), bidder, TOKEN_ID, traitKey, seller, PRICE, 1 ether
+            LuciMarket.BidType.SELECTION, address(nft), bidder, TOKEN_ID, selectionRoot, seller, PRICE, 1 ether
         );
         vm.prank(seller);
-        market.acceptBid(_traitBid(TOKEN_ID, traitKey), bidder, PRICE);
+        market.acceptBid(_selectionBid(selectionRoot, address(nft), TOKEN_ID), bidder, PRICE, _merkleProof(tokens, 0));
 
         assertEq(nft.ownerOf(TOKEN_ID), bidder);
-        (uint192 bidAmount,) = market.traitBids(bidder, address(nft), traitKey);
-        assertEq(bidAmount, 0);
+        assertEq(seller.balance, sellerBefore + 9 ether);
+        assertEq(royaltyRecipient.balance, recipientBefore + 1 ether);
         assertEq(address(market).balance, 0);
+
+        (uint192 bidAmount,) = market.selectionBids(bidder, selectionRoot);
+        (address listingSeller,,,) = market.listings(address(nft), TOKEN_ID);
+        assertEq(bidAmount, 0);
+        assertEq(listingSeller, address(0));
     }
 
     function test_cancelBidsRefundsMultipleEscrowsInOneCall() public {
         uint256 bidderBefore = bidder.balance;
-        uint256 traitKey = _traitKey(0, 5);
-
-        vm.prank(owner);
-        market.setCollectionTraitsConfig(address(nft), _traitConfig(0));
 
         _placeTokenBid(TOKEN_ID, 1 ether);
         _placeCollectionBid(2 ether);
-        _placeTraitBid(traitKey, 3 ether);
+        bytes32 selectionRoot = _merkleRoot(_tokens(address(nft), TOKEN_ID));
+        _placeSelectionBid(selectionRoot, 3 ether);
         assertEq(address(market).balance, 6 ether);
 
         LuciMarket.BidSelector[] memory selectors = new LuciMarket.BidSelector[](3);
         selectors[0] = LuciMarket.BidSelector({
-            bidType: LuciMarket.BidType.TOKEN, collection: address(nft), tokenId: TOKEN_ID, traitKey: 0
+            bidType: LuciMarket.BidType.TOKEN, collection: address(nft), tokenId: TOKEN_ID, selectionRoot: bytes32(0)
         });
         selectors[1] = LuciMarket.BidSelector({
-            bidType: LuciMarket.BidType.COLLECTION, collection: address(nft), tokenId: 0, traitKey: 0
+            bidType: LuciMarket.BidType.COLLECTION, collection: address(nft), tokenId: 0, selectionRoot: bytes32(0)
         });
-        selectors[2] = LuciMarket.BidSelector({
-            bidType: LuciMarket.BidType.TRAIT, collection: address(nft), tokenId: 0, traitKey: traitKey
-        });
+        selectors[2] = _selectionBid(selectionRoot, address(0), 0);
 
+        vm.expectEmit(true, true, true, true, address(market));
+        emit LuciMarket.BidCanceled(LuciMarket.BidType.SELECTION, address(0), bidder, 0, selectionRoot);
         vm.prank(bidder);
         market.cancelBids(selectors);
 
@@ -257,16 +252,13 @@ contract LuciMarketIntegrationTest is LuciTestBase {
 
     function test_cancelExpiredBidsRefundsEscrow() public {
         uint256 bidderBefore = bidder.balance;
-        uint256 traitKey = _traitKey(0, 5);
         uint64 initialExpiry = _expires(1);
-
-        vm.prank(owner);
-        market.setCollectionTraitsConfig(address(nft), _traitConfig(0));
+        bytes32 selectionRoot = _merkleRoot(_tokens(address(nft), TOKEN_ID));
 
         vm.startPrank(bidder);
         market.placeBid{value: 1 ether}(_tokenBid(TOKEN_ID), initialExpiry);
         market.placeBid{value: 2 ether}(_collectionBid(0), initialExpiry);
-        market.placeBid{value: 3 ether}(_traitBid(0, traitKey), initialExpiry);
+        market.placeBid{value: 3 ether}(_selectionBid(selectionRoot, address(0), 0), initialExpiry);
         vm.stopPrank();
 
         assertEq(bidder.balance, bidderBefore - 6 ether);
@@ -276,14 +268,12 @@ contract LuciMarketIntegrationTest is LuciTestBase {
 
         LuciMarket.BidSelector[] memory selectors = new LuciMarket.BidSelector[](3);
         selectors[0] = LuciMarket.BidSelector({
-            bidType: LuciMarket.BidType.TOKEN, collection: address(nft), tokenId: TOKEN_ID, traitKey: 0
+            bidType: LuciMarket.BidType.TOKEN, collection: address(nft), tokenId: TOKEN_ID, selectionRoot: bytes32(0)
         });
         selectors[1] = LuciMarket.BidSelector({
-            bidType: LuciMarket.BidType.COLLECTION, collection: address(nft), tokenId: 0, traitKey: 0
+            bidType: LuciMarket.BidType.COLLECTION, collection: address(nft), tokenId: 0, selectionRoot: bytes32(0)
         });
-        selectors[2] = LuciMarket.BidSelector({
-            bidType: LuciMarket.BidType.TRAIT, collection: address(nft), tokenId: 0, traitKey: traitKey
-        });
+        selectors[2] = _selectionBid(selectionRoot, address(0), 0);
 
         vm.prank(bidder);
         market.cancelBids(selectors);
@@ -293,10 +283,10 @@ contract LuciMarketIntegrationTest is LuciTestBase {
 
         (uint192 tokenAmount,) = market.tokenBids(bidder, address(nft), TOKEN_ID);
         (uint192 collectionAmount,) = market.collectionBids(bidder, address(nft));
-        (uint192 traitAmount,) = market.traitBids(bidder, address(nft), traitKey);
+        (uint192 selectionAmount,) = market.selectionBids(bidder, selectionRoot);
         assertEq(tokenAmount, 0);
         assertEq(collectionAmount, 0);
-        assertEq(traitAmount, 0);
+        assertEq(selectionAmount, 0);
     }
 
     function test_staleListingBecomesFillableAgainWhenSellerReacquiresToken() public {
@@ -373,7 +363,7 @@ contract LuciMarketIntegrationTest is LuciTestBase {
 
         vm.expectRevert(LuciMarket.CollectionNotAllowed.selector);
         vm.prank(seller);
-        market.acceptBid(_collectionBid(TOKEN_ID_TWO), bidder, PRICE);
+        market.acceptBid(_collectionBid(TOKEN_ID_TWO), bidder, PRICE, _noProof());
 
         vm.prank(owner);
         market.addCollection(address(nft));
@@ -382,32 +372,21 @@ contract LuciMarketIntegrationTest is LuciTestBase {
         market.buy{value: PRICE}(address(nft), TOKEN_ID);
 
         vm.prank(seller);
-        market.acceptBid(_collectionBid(TOKEN_ID_TWO), bidder, PRICE);
+        market.acceptBid(_collectionBid(TOKEN_ID_TWO), bidder, PRICE, _noProof());
 
         assertEq(nft.ownerOf(TOKEN_ID), buyer);
         assertEq(nft.ownerOf(TOKEN_ID_TWO), bidder);
     }
 
     function test_zeroExpiryBidsRemainFillableAfterLongTime() public {
-        uint256 traitTokenId = 3;
-        uint256 traitKey = _traitKey(0, 5);
-
-        nft.mint(seller, traitTokenId);
-
-        vm.prank(owner);
-        market.setCollectionTraitsConfig(address(nft), _traitConfig(0));
-
-        uint256[] memory tokenIds = new uint256[](1);
-        uint32[] memory traitsArray = new uint32[](1);
-        tokenIds[0] = traitTokenId;
-        traitsArray[0] = _trait(0, 5);
-        vm.prank(owner);
-        market.setTraits(address(nft), tokenIds, traitsArray);
+        uint256 selectionTokenId = 3;
+        nft.mint(seller, selectionTokenId);
+        bytes32 selectionRoot = _merkleRoot(_tokens(address(nft), selectionTokenId));
 
         vm.startPrank(bidder);
         market.placeBid{value: 1 ether}(_tokenBid(TOKEN_ID), 0);
         market.placeBid{value: 2 ether}(_collectionBid(0), 0);
-        market.placeBid{value: 3 ether}(_traitBid(0, traitKey), 0);
+        market.placeBid{value: 3 ether}(_selectionBid(selectionRoot, address(0), 0), 0);
         vm.stopPrank();
 
         vm.warp(block.timestamp + 365 days);
@@ -415,46 +394,41 @@ contract LuciMarketIntegrationTest is LuciTestBase {
         vm.startPrank(bidder);
         market.increaseBid{value: 0.1 ether}(_tokenBid(TOKEN_ID));
         market.increaseBid{value: 0.1 ether}(_collectionBid(0));
-        market.increaseBid{value: 0.1 ether}(_traitBid(0, traitKey));
+        market.increaseBid{value: 0.1 ether}(_selectionBid(selectionRoot, address(0), 0));
         vm.stopPrank();
 
         vm.prank(seller);
-        market.acceptBid(_tokenBid(TOKEN_ID), bidder, 1.1 ether);
+        market.acceptBid(_tokenBid(TOKEN_ID), bidder, 1.1 ether, _noProof());
 
         vm.prank(seller);
-        market.acceptBid(_collectionBid(TOKEN_ID_TWO), bidder, 2.1 ether);
+        market.acceptBid(_collectionBid(TOKEN_ID_TWO), bidder, 2.1 ether, _noProof());
 
         vm.prank(seller);
-        market.acceptBid(_traitBid(traitTokenId, traitKey), bidder, 3.1 ether);
+        market.acceptBid(_selectionBid(selectionRoot, address(nft), selectionTokenId), bidder, 3.1 ether, _noProof());
 
         assertEq(nft.ownerOf(TOKEN_ID), bidder);
         assertEq(nft.ownerOf(TOKEN_ID_TWO), bidder);
-        assertEq(nft.ownerOf(traitTokenId), bidder);
+        assertEq(nft.ownerOf(selectionTokenId), bidder);
     }
 
     function test_bidderCanCancelAndRebidSameKeysWithDifferentAmounts() public {
-        uint256 traitKey = _traitKey(0, 5);
         uint256 bidderBefore = bidder.balance;
-
-        vm.prank(owner);
-        market.setCollectionTraitsConfig(address(nft), _traitConfig(0));
+        bytes32 selectionRoot = _merkleRoot(_tokens(address(nft), TOKEN_ID));
 
         vm.startPrank(bidder);
         market.placeBid{value: 1 ether}(_tokenBid(TOKEN_ID), _expires(1 days));
         market.placeBid{value: 2 ether}(_collectionBid(0), _expires(1 days));
-        market.placeBid{value: 3 ether}(_traitBid(0, traitKey), _expires(1 days));
+        market.placeBid{value: 3 ether}(_selectionBid(selectionRoot, address(0), 0), _expires(1 days));
         vm.stopPrank();
 
         LuciMarket.BidSelector[] memory selectors = new LuciMarket.BidSelector[](3);
         selectors[0] = LuciMarket.BidSelector({
-            bidType: LuciMarket.BidType.TOKEN, collection: address(nft), tokenId: TOKEN_ID, traitKey: 0
+            bidType: LuciMarket.BidType.TOKEN, collection: address(nft), tokenId: TOKEN_ID, selectionRoot: bytes32(0)
         });
         selectors[1] = LuciMarket.BidSelector({
-            bidType: LuciMarket.BidType.COLLECTION, collection: address(nft), tokenId: 0, traitKey: 0
+            bidType: LuciMarket.BidType.COLLECTION, collection: address(nft), tokenId: 0, selectionRoot: bytes32(0)
         });
-        selectors[2] = LuciMarket.BidSelector({
-            bidType: LuciMarket.BidType.TRAIT, collection: address(nft), tokenId: 0, traitKey: traitKey
-        });
+        selectors[2] = _selectionBid(selectionRoot, address(0), 0);
 
         vm.prank(bidder);
         market.cancelBids(selectors);
@@ -465,53 +439,49 @@ contract LuciMarketIntegrationTest is LuciTestBase {
         vm.startPrank(bidder);
         market.placeBid{value: 1.5 ether}(_tokenBid(TOKEN_ID), _expires(2 days));
         market.placeBid{value: 2.5 ether}(_collectionBid(0), _expires(2 days));
-        market.placeBid{value: 3.5 ether}(_traitBid(0, traitKey), _expires(2 days));
+        market.placeBid{value: 3.5 ether}(_selectionBid(selectionRoot, address(0), 0), _expires(2 days));
         vm.stopPrank();
 
         (uint192 tokenAmount,) = market.tokenBids(bidder, address(nft), TOKEN_ID);
         (uint192 collectionAmount,) = market.collectionBids(bidder, address(nft));
-        (uint192 traitAmount,) = market.traitBids(bidder, address(nft), traitKey);
+        (uint192 selectionAmount,) = market.selectionBids(bidder, selectionRoot);
         assertEq(tokenAmount, 1.5 ether);
         assertEq(collectionAmount, 2.5 ether);
-        assertEq(traitAmount, 3.5 ether);
+        assertEq(selectionAmount, 3.5 ether);
         assertEq(address(market).balance, 7.5 ether);
     }
 
-    function test_traitBidBecomesFillableAgainAfterTraitConfigIsRestored() public {
-        uint256 traitKey = _traitKey(0, 5);
-
-        vm.prank(owner);
-        market.setCollectionTraitsConfig(address(nft), _traitConfig(0));
-
-        uint256[] memory tokenIds = new uint256[](1);
-        uint32[] memory traitsArray = new uint32[](1);
-        tokenIds[0] = TOKEN_ID;
-        traitsArray[0] = _trait(0, 5);
-        vm.prank(owner);
-        market.setTraits(address(nft), tokenIds, traitsArray);
-
-        _placeTraitBid(traitKey, PRICE);
-
-        vm.prank(owner);
-        market.setCollectionTraitsConfig(address(nft), 0);
-
-        vm.expectRevert(LuciMarket.InvalidTraitKey.selector);
+    function test_selectionBidBecomesFillableAgainAfterTokenIsReallowed() public {
+        MockERC721 shared = new MockERC721();
+        shared.mint(seller, TOKEN_ID);
         vm.prank(seller);
-        market.acceptBid(_traitBid(TOKEN_ID, traitKey), bidder, PRICE);
+        shared.setApprovalForAll(address(market), true);
+        vm.prank(owner);
+        market.addToken(address(shared), TOKEN_ID);
 
+        bytes32 selectionRoot = _merkleRoot(_tokens(address(shared), TOKEN_ID));
+        _placeSelectionBid(selectionRoot, PRICE);
+
+        vm.prank(owner);
+        market.removeToken(address(shared), TOKEN_ID);
+
+        vm.expectRevert(LuciMarket.CollectionOrTokenNotAllowed.selector);
+        vm.prank(seller);
+        market.acceptBid(_selectionBid(selectionRoot, address(shared), TOKEN_ID), bidder, PRICE, _noProof());
+
+        // extension is not gated by the allowlist for selection bids; fulfillment is
         LuciMarket.BidSelector[] memory selectors = new LuciMarket.BidSelector[](1);
-        selectors[0] = _traitBid(0, traitKey);
-        vm.expectRevert(LuciMarket.InvalidTraitKey.selector);
+        selectors[0] = _selectionBid(selectionRoot, address(0), 0);
         vm.prank(bidder);
         market.extendBids(selectors, _expires(2 days));
 
         vm.prank(owner);
-        market.setCollectionTraitsConfig(address(nft), _traitConfig(0));
+        market.addToken(address(shared), TOKEN_ID);
 
         vm.prank(seller);
-        market.acceptBid(_traitBid(TOKEN_ID, traitKey), bidder, PRICE);
+        market.acceptBid(_selectionBid(selectionRoot, address(shared), TOKEN_ID), bidder, PRICE, _noProof());
 
-        assertEq(nft.ownerOf(TOKEN_ID), bidder);
+        assertEq(shared.ownerOf(TOKEN_ID), bidder);
     }
 
     function test_buyRevertsAndRestoresStateWhenSellerCannotReceiveEth() public {
@@ -600,7 +570,7 @@ contract TokenBidEscrowHandler {
 
         market.placeBid{value: amount}(
             LuciMarket.BidSelector({
-                bidType: LuciMarket.BidType.TOKEN, collection: collection, tokenId: tokenId, traitKey: 0
+                bidType: LuciMarket.BidType.TOKEN, collection: collection, tokenId: tokenId, selectionRoot: bytes32(0)
             }),
             expiresAt
         );
@@ -617,7 +587,7 @@ contract TokenBidEscrowHandler {
 
         market.increaseBid{value: amount}(
             LuciMarket.BidSelector({
-                bidType: LuciMarket.BidType.TOKEN, collection: collection, tokenId: tokenId, traitKey: 0
+                bidType: LuciMarket.BidType.TOKEN, collection: collection, tokenId: tokenId, selectionRoot: bytes32(0)
             })
         );
         activeAmount += uint192(amount);
@@ -629,7 +599,7 @@ contract TokenBidEscrowHandler {
 
         LuciMarket.BidSelector[] memory selectors = new LuciMarket.BidSelector[](1);
         selectors[0] = LuciMarket.BidSelector({
-            bidType: LuciMarket.BidType.TOKEN, collection: collection, tokenId: tokenId, traitKey: 0
+            bidType: LuciMarket.BidType.TOKEN, collection: collection, tokenId: tokenId, selectionRoot: bytes32(0)
         });
         market.extendBids(selectors, expiresAt);
     }
@@ -639,7 +609,7 @@ contract TokenBidEscrowHandler {
 
         LuciMarket.BidSelector[] memory selectors = new LuciMarket.BidSelector[](1);
         selectors[0] = LuciMarket.BidSelector({
-            bidType: LuciMarket.BidType.TOKEN, collection: collection, tokenId: tokenId, traitKey: 0
+            bidType: LuciMarket.BidType.TOKEN, collection: collection, tokenId: tokenId, selectionRoot: bytes32(0)
         });
         market.cancelBids(selectors);
         activeAmount = 0;

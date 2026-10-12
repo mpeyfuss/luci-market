@@ -2,9 +2,6 @@
 # (-include to ignore error if it does not exist)
 -include .env
 
-BATCH_SIZE ?= 250
-OUTPUT ?= traits.json
-
 ########################################
 # Dependencies
 ########################################
@@ -80,12 +77,3 @@ deploy_LuciMarket_mainnet: build
 	sleep 60
 	forge verify-contract $$(cat out.txt) src/LuciMarket.sol:LuciMarket --chain 1 --watch --constructor-args ${CONSTRUCTOR_ARGS}
 	@bash print_and_clean.sh
-
-########################################
-# Trait calldata
-########################################
-traits:
-	python3 script/pack_traits.py --input $(INPUT) --output $(OUTPUT) --batch-size $(BATCH_SIZE)
-
-test-traits:
-	python3 script/test_pack_traits.py

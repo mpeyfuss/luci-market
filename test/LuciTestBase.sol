@@ -4,6 +4,7 @@ pragma solidity 0.8.30;
 import {Test} from "forge-std-1.14.0/Test.sol";
 import {Ownable} from "@openzeppelin-contracts-5.6.1/access/Ownable.sol";
 import {Math} from "@openzeppelin-contracts-5.6.1/utils/math/Math.sol";
+import {Hashes} from "@openzeppelin-contracts-5.6.1/utils/cryptography/Hashes.sol";
 import {LuciMarket} from "../src/LuciMarket.sol";
 import {LuciRoyaltyModel} from "../src/LuciRoyaltyModel.sol";
 import {MockAggregatorV3, MockERC721, MockSanctionsList} from "./mocks/MarketplaceMocks.sol";
@@ -87,44 +88,112 @@ abstract contract LuciTestBase is Test {
         market.placeBid{value: amount}(_collectionBid(0), _expires(1 days));
     }
 
-    function _placeTraitBid(uint256 traitKey, uint256 amount) internal {
+    function _placeSelectionBid(bytes32 selectionRoot, uint256 amount) internal {
         vm.prank(bidder);
-        market.placeBid{value: amount}(_traitBid(0, traitKey), _expires(1 days));
+        market.placeBid{value: amount}(_selectionBid(selectionRoot, address(0), 0), _expires(1 days));
     }
 
     function _tokenBid(uint256 tokenId) internal view returns (LuciMarket.BidSelector memory) {
         return LuciMarket.BidSelector({
-            bidType: LuciMarket.BidType.TOKEN, collection: address(nft), tokenId: tokenId, traitKey: 0
+            bidType: LuciMarket.BidType.TOKEN, collection: address(nft), tokenId: tokenId, selectionRoot: bytes32(0)
         });
     }
 
     function _collectionBid(uint256 tokenId) internal view returns (LuciMarket.BidSelector memory) {
         return LuciMarket.BidSelector({
-            bidType: LuciMarket.BidType.COLLECTION, collection: address(nft), tokenId: tokenId, traitKey: 0
+            bidType: LuciMarket.BidType.COLLECTION,
+            collection: address(nft),
+            tokenId: tokenId,
+            selectionRoot: bytes32(0)
         });
     }
 
-    function _traitBid(uint256 tokenId, uint256 traitKey) internal view returns (LuciMarket.BidSelector memory) {
+    /// @dev `collection` and `tokenId` identify the token being sold on accept and are ignored elsewhere
+    function _noProof() internal pure returns (bytes32[] memory) {
+        return new bytes32[](0);
+    }
+
+    function _selectionBid(bytes32 selectionRoot, address collection, uint256 tokenId)
+        internal
+        pure
+        returns (LuciMarket.BidSelector memory)
+    {
         return LuciMarket.BidSelector({
-            bidType: LuciMarket.BidType.TRAIT, collection: address(nft), tokenId: tokenId, traitKey: traitKey
+            bidType: LuciMarket.BidType.SELECTION,
+            collection: collection,
+            tokenId: tokenId,
+            selectionRoot: selectionRoot
         });
+    }
+
+    function _tokens(address collection, uint256 tokenId) internal pure returns (LuciMarket.Token[] memory tokens) {
+        tokens = new LuciMarket.Token[](1);
+        tokens[0] = LuciMarket.Token({collection: collection, tokenId: tokenId});
+    }
+
+    function _tokens(address collection, uint256 tokenIdA, uint256 tokenIdB)
+        internal
+        pure
+        returns (LuciMarket.Token[] memory tokens)
+    {
+        tokens = new LuciMarket.Token[](2);
+        tokens[0] = LuciMarket.Token({collection: collection, tokenId: tokenIdA});
+        tokens[1] = LuciMarket.Token({collection: collection, tokenId: tokenIdB});
+    }
+
+    /// @dev OpenZeppelin standard Merkle tree leaf for `(collection, tokenId)`
+    function _leaf(address collection, uint256 tokenId) internal pure returns (bytes32) {
+        return keccak256(bytes.concat(keccak256(abi.encode(collection, tokenId))));
+    }
+
+    /// @dev Merkle root over `tokens` in the given order, with sorted-pair hashing and odd nodes carried up
+    function _merkleRoot(LuciMarket.Token[] memory tokens) internal pure returns (bytes32) {
+        bytes32[] memory layer = _merkleLeaves(tokens);
+        while (layer.length > 1) {
+            layer = _nextMerkleLayer(layer);
+        }
+        return layer[0];
+    }
+
+    /// @dev Merkle proof for `tokens[index]` in the tree built by `_merkleRoot`
+    function _merkleProof(LuciMarket.Token[] memory tokens, uint256 index)
+        internal
+        pure
+        returns (bytes32[] memory proof)
+    {
+        bytes32[] memory layer = _merkleLeaves(tokens);
+        bytes32[] memory buffer = new bytes32[](256);
+        uint256 depth = 0;
+        while (layer.length > 1) {
+            uint256 sibling = index ^ 1;
+            if (sibling < layer.length) buffer[depth++] = layer[sibling];
+            layer = _nextMerkleLayer(layer);
+            index >>= 1;
+        }
+        proof = new bytes32[](depth);
+        for (uint256 i = 0; i < depth; ++i) {
+            proof[i] = buffer[i];
+        }
+    }
+
+    function _merkleLeaves(LuciMarket.Token[] memory tokens) internal pure returns (bytes32[] memory leaves) {
+        leaves = new bytes32[](tokens.length);
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            leaves[i] = _leaf(tokens[i].collection, tokens[i].tokenId);
+        }
+    }
+
+    function _nextMerkleLayer(bytes32[] memory layer) internal pure returns (bytes32[] memory next) {
+        next = new bytes32[]((layer.length + 1) / 2);
+        for (uint256 i = 0; i < next.length; ++i) {
+            uint256 left = 2 * i;
+            next[i] = left + 1 < layer.length ? Hashes.commutativeKeccak256(layer[left], layer[left + 1]) : layer[left];
+        }
     }
 
     function _setSanctionsList() internal {
         vm.prank(owner);
         market.setSanctionsList(address(sanctions));
-    }
-
-    function _traitConfig(uint8 slot) internal pure returns (uint32) {
-        return uint32(uint32(0x80) << (slot * 8));
-    }
-
-    function _trait(uint8 slot, uint8 value) internal pure returns (uint32) {
-        return uint32(uint32(0x80 | value) << (slot * 8));
-    }
-
-    function _traitKey(uint8 slot, uint8 value) internal pure returns (uint256) {
-        return uint256(1) << (uint256(slot) * 64 + value);
     }
 
     function _expectOwnableUnauthorized(address account) internal {
