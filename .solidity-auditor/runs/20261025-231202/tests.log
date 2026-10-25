@@ -1,0 +1,732 @@
+forge build --sizes
+Compiling 54 files with Solc 0.8.30
+Solc 0.8.30 finished in 3.54s
+Compiler run successful!
+
+╭-----------------------+------------------+-------------------+--------------------+---------------------╮
+| Contract              | Runtime Size (B) | Initcode Size (B) | Runtime Margin (B) | Initcode Margin (B) |
++=========================================================================================================+
+| LuciMarket            | 17,634           | 18,036            | 6,942              | 31,116              |
+|-----------------------+------------------+-------------------+--------------------+---------------------|
+| LuciRoyaltyModel      | 6,073            | 6,507             | 18,503             | 42,645              |
+|-----------------------+------------------+-------------------+--------------------+---------------------|
+| MockAggregatorV3      | 933              | 1,067             | 23,643             | 48,085              |
+|-----------------------+------------------+-------------------+--------------------+---------------------|
+| MockERC721            | 4,678            | 5,142             | 19,898             | 44,010              |
+|-----------------------+------------------+-------------------+--------------------+---------------------|
+| MockRoyaltyModel      | 476              | 624               | 24,100             | 48,528              |
+|-----------------------+------------------+-------------------+--------------------+---------------------|
+| MockSanctionsList     | 461              | 489               | 24,115             | 48,663              |
+|-----------------------+------------------+-------------------+--------------------+---------------------|
+| ReenteringBuyer       | 1,491            | 1,519             | 23,085             | 47,633              |
+|-----------------------+------------------+-------------------+--------------------+---------------------|
+| RejectEthActor        | 788              | 816               | 23,788             | 48,336              |
+|-----------------------+------------------+-------------------+--------------------+---------------------|
+| TokenBidEscrowHandler | 3,388            | 3,674             | 21,188             | 45,478              |
+|-----------------------+------------------+-------------------+--------------------+---------------------|
+| stdError              | 684              | 736               | 23,892             | 48,416              |
+╰-----------------------+------------------+-------------------+--------------------+---------------------╯
+
+warning[missing-zero-check]: address parameter is used in a state write or value transfer without a zero-address check
+    ╭▸ src/LuciMarket.sol:214:62
+    │
+214 │     constructor(address initOwner, address initRoyaltyModel, address initSanctionsList) Ownable(initOwner) {
+    │                                                              ━━━━━━━━━━━━━━━━━━━━━━━━━
+    │
+    ╰ help: https://getfoundry.sh/forge/linting/missing-zero-check
+
+warning[block-timestamp]: usage of `block.timestamp` in a comparison may be manipulated by validators
+    ╭▸ src/LuciMarket.sol:236:13
+    │
+236 │         if (expiresAt < block.timestamp) revert InvalidListingExpiration();
+    │             ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    │
+    ╰ help: https://getfoundry.sh/forge/linting/block-timestamp
+
+warning[block-timestamp]: usage of `block.timestamp` in a comparison may be manipulated by validators
+    ╭▸ src/LuciMarket.sol:237:13
+    │
+237 │         if (expiresAt - uint64(block.timestamp) > MAX_LISTING_DURATION) revert InvalidListingExpiration();
+    │             ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    │
+    ╰ help: https://getfoundry.sh/forge/linting/block-timestamp
+
+warning[unsafe-typecast]: typecast can truncate values
+    ╭▸ src/LuciMarket.sol:237:25
+    │
+237 │         if (expiresAt - uint64(block.timestamp) > MAX_LISTING_DURATION) revert InvalidListingExpiration();
+    │                         ━━━━━━━━━━━━━━━━━━━━━━━
+    │
+    ├ note: consider disabling this lint if you're certain the cast is safe
+    │       
+    │       // casting to 'uint64' is safe because [explain why]
+    │       // forge-lint: disable-next-line(unsafe-typecast)
+    │       
+    │       
+    ╰ help: https://getfoundry.sh/forge/linting/unsafe-typecast
+
+warning[unsafe-typecast]: typecast can truncate values
+    ╭▸ src/LuciRoyaltyModel.sol:281:29
+    │
+281 │             uint256 scale = uint256(answer) * 10 ** USD_DECIMALS;
+    │                             ━━━━━━━━━━━━━━━
+    │
+    ├ note: consider disabling this lint if you're certain the cast is safe
+    │       
+    │       // casting to 'uint256' is safe because [explain why]
+    │       // forge-lint: disable-next-line(unsafe-typecast)
+    │       
+    │       
+    ╰ help: https://getfoundry.sh/forge/linting/unsafe-typecast
+
+warning[block-timestamp]: usage of `block.timestamp` in a comparison may be manipulated by validators
+    ╭▸ src/LuciRoyaltyModel.sol:299:31
+    │
+299 │         if (updatedAt == 0 || updatedAt > block.timestamp) return false;
+    │                               ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    │
+    ╰ help: https://getfoundry.sh/forge/linting/block-timestamp
+
+warning[block-timestamp]: usage of `block.timestamp` in a comparison may be manipulated by validators
+    ╭▸ src/LuciRoyaltyModel.sol:300:13
+    │
+300 │         if (block.timestamp - updatedAt > maxAge) return false;
+    │             ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    │
+    ╰ help: https://getfoundry.sh/forge/linting/block-timestamp
+
+warning[unsafe-typecast]: typecast can truncate values
+    ╭▸ src/LuciRoyaltyModel.sol:301:13
+    │
+301 │         if (uint256(answer) > type(uint256).max / 10 ** USD_DECIMALS) return false; // overflow check
+    │             ━━━━━━━━━━━━━━━
+    │
+    ├ note: consider disabling this lint if you're certain the cast is safe
+    │       
+    │       // casting to 'uint256' is safe because [explain why]
+    │       // forge-lint: disable-next-line(unsafe-typecast)
+    │       
+    │       
+    ╰ help: https://getfoundry.sh/forge/linting/unsafe-typecast
+
+warning[block-timestamp]: usage of `block.timestamp` in a comparison may be manipulated by validators
+    ╭▸ src/LuciMarket.sol:260:13
+    │
+260 │         if (expiresAt < block.timestamp) revert InvalidListingExpiration();
+    │             ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    │
+    ╰ help: https://getfoundry.sh/forge/linting/block-timestamp
+
+warning[block-timestamp]: usage of `block.timestamp` in a comparison may be manipulated by validators
+    ╭▸ src/LuciMarket.sol:261:13
+    │
+261 │         if (expiresAt - uint64(block.timestamp) > MAX_LISTING_DURATION) revert InvalidListingExpiration();
+    │             ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    │
+    ╰ help: https://getfoundry.sh/forge/linting/block-timestamp
+
+warning[calls-loop]: external call inside a loop
+    ╭▸ src/LuciMarket.sol:271:17
+    │
+271 │             if (nft.ownerOf(token.tokenId) != msg.sender) revert NotTokenOwner();
+    │                 ━━━━━━━━━━━━━━━━━━━━━━━━━━
+    │
+    ╰ help: https://getfoundry.sh/forge/linting/calls-loop
+
+warning[calls-loop]: external call inside a loop
+    ╭▸ src/LuciMarket.sol:648:16
+    │
+648 │         return nft.isApprovedForAll(owner, address(this)) || nft.getApproved(tokenId) == address(this);
+    │                ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    │
+    ╰ help: https://getfoundry.sh/forge/linting/calls-loop
+
+warning[calls-loop]: external call inside a loop
+    ╭▸ src/LuciMarket.sol:648:62
+    │
+648 │         return nft.isApprovedForAll(owner, address(this)) || nft.getApproved(tokenId) == address(this);
+    │                                                              ━━━━━━━━━━━━━━━━━━━━━━━━
+    │
+    ╰ help: https://getfoundry.sh/forge/linting/calls-loop
+
+warning[require-revert-in-loop]: `require` or `revert` inside a loop
+    ╭▸ src/LuciMarket.sol:642:13
+    │
+642 │             revert CollectionOrTokenNotAllowed();
+    │             ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    │
+    ╰ help: https://getfoundry.sh/forge/linting/require-revert-in-loop
+
+warning[require-revert-in-loop]: `require` or `revert` inside a loop
+    ╭▸ src/LuciMarket.sol:268:47
+    │
+268 │             if (listing.seller != msg.sender) revert NotListingOwner(); // this is triggered if the token isn't listed
+    │                                               ━━━━━━━━━━━━━━━━━━━━━━━━━
+    │
+    ╰ help: https://getfoundry.sh/forge/linting/require-revert-in-loop
+
+warning[require-revert-in-loop]: `require` or `revert` inside a loop
+    ╭▸ src/LuciMarket.sol:271:59
+    │
+271 │             if (nft.ownerOf(token.tokenId) != msg.sender) revert NotTokenOwner();
+    │                                                           ━━━━━━━━━━━━━━━━━━━━━━━
+    │
+    ╰ help: https://getfoundry.sh/forge/linting/require-revert-in-loop
+
+warning[require-revert-in-loop]: `require` or `revert` inside a loop
+    ╭▸ src/LuciMarket.sol:272:63
+    │
+272 │             if (!_isApproved(nft, msg.sender, token.tokenId)) revert NotApproved();
+    │                                                               ━━━━━━━━━━━━━━━━━━━━━
+    │
+    ╰ help: https://getfoundry.sh/forge/linting/require-revert-in-loop
+
+warning[unsafe-typecast]: typecast can truncate values
+    ╭▸ src/LuciMarket.sol:261:25
+    │
+261 │         if (expiresAt - uint64(block.timestamp) > MAX_LISTING_DURATION) revert InvalidListingExpiration();
+    │                         ━━━━━━━━━━━━━━━━━━━━━━━
+    │
+    ├ note: consider disabling this lint if you're certain the cast is safe
+    │       
+    │       // casting to 'uint64' is safe because [explain why]
+    │       // forge-lint: disable-next-line(unsafe-typecast)
+    │       
+    │       
+    ╰ help: https://getfoundry.sh/forge/linting/unsafe-typecast
+
+warning[require-revert-in-loop]: `require` or `revert` inside a loop
+    ╭▸ src/LuciMarket.sol:690:39
+    │
+690 │         if (listing.seller != sender) revert NotListingOwner();
+    │                                       ━━━━━━━━━━━━━━━━━━━━━━━━━
+    │
+    ╰ help: https://getfoundry.sh/forge/linting/require-revert-in-loop
+
+warning[reentrancy-events]: event emitted after an external call; reentrancy can reorder or fabricate logs that off-chain consumers rely on
+    ╭▸ src/LuciMarket.sol:315:9
+    │
+315 │         emit Sold(collection, tokenId, msg.sender, listing.seller, listing.price, royaltyAmount);
+    │         ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    │
+    ╰ help: https://getfoundry.sh/forge/linting/reentrancy-events
+
+warning[block-timestamp]: usage of `block.timestamp` in a comparison may be manipulated by validators
+    ╭▸ src/LuciMarket.sol:332:31
+    │
+332 │         if (expiresAt != 0 && expiresAt < block.timestamp) revert BidExpired();
+    │                               ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    │
+    ╰ help: https://getfoundry.sh/forge/linting/block-timestamp
+
+warning[unsafe-typecast]: typecast can truncate values
+    ╭▸ src/LuciMarket.sol:341:30
+    │
+341 │                 Bid({amount: uint192(msg.value), expiresAt: expiresAt});
+    │                              ━━━━━━━━━━━━━━━━━━
+    │
+    ├ note: consider disabling this lint if you're certain the cast is safe
+    │       
+    │       // casting to 'uint192' is safe because [explain why]
+    │       // forge-lint: disable-next-line(unsafe-typecast)
+    │       
+    │       
+    ╰ help: https://getfoundry.sh/forge/linting/unsafe-typecast
+
+warning[unsafe-typecast]: typecast can truncate values
+    ╭▸ src/LuciMarket.sol:348:79
+    │
+348 │             collectionBids[msg.sender][bidSelector.collection] = Bid({amount: uint192(msg.value), expiresAt: expiresAt});
+    │                                                                               ━━━━━━━━━━━━━━━━━━
+    │
+    ├ note: consider disabling this lint if you're certain the cast is safe
+    │       
+    │       // casting to 'uint192' is safe because [explain why]
+    │       // forge-lint: disable-next-line(unsafe-typecast)
+    │       
+    │       
+    ╰ help: https://getfoundry.sh/forge/linting/unsafe-typecast
+
+warning[unsafe-typecast]: typecast can truncate values
+    ╭▸ src/LuciMarket.sol:354:30
+    │
+354 │                 Bid({amount: uint192(msg.value), expiresAt: expiresAt});
+    │                              ━━━━━━━━━━━━━━━━━━
+    │
+    ├ note: consider disabling this lint if you're certain the cast is safe
+    │       
+    │       // casting to 'uint192' is safe because [explain why]
+    │       // forge-lint: disable-next-line(unsafe-typecast)
+    │       
+    │       
+    ╰ help: https://getfoundry.sh/forge/linting/unsafe-typecast
+
+warning[unsafe-typecast]: typecast can truncate values
+    ╭▸ src/LuciMarket.sol:375:32
+    │
+375 │             tokenBid.amount += uint192(msg.value);
+    │                                ━━━━━━━━━━━━━━━━━━
+    │
+    ├ note: consider disabling this lint if you're certain the cast is safe
+    │       
+    │       // casting to 'uint192' is safe because [explain why]
+    │       // forge-lint: disable-next-line(unsafe-typecast)
+    │       
+    │       
+    ╰ help: https://getfoundry.sh/forge/linting/unsafe-typecast
+
+warning[unsafe-typecast]: typecast can truncate values
+    ╭▸ src/LuciMarket.sol:384:37
+    │
+384 │             collectionBid.amount += uint192(msg.value);
+    │                                     ━━━━━━━━━━━━━━━━━━
+    │
+    ├ note: consider disabling this lint if you're certain the cast is safe
+    │       
+    │       // casting to 'uint192' is safe because [explain why]
+    │       // forge-lint: disable-next-line(unsafe-typecast)
+    │       
+    │       
+    ╰ help: https://getfoundry.sh/forge/linting/unsafe-typecast
+
+warning[unsafe-typecast]: typecast can truncate values
+    ╭▸ src/LuciMarket.sol:390:36
+    │
+390 │             selectionBid.amount += uint192(msg.value);
+    │                                    ━━━━━━━━━━━━━━━━━━
+    │
+    ├ note: consider disabling this lint if you're certain the cast is safe
+    │       
+    │       // casting to 'uint192' is safe because [explain why]
+    │       // forge-lint: disable-next-line(unsafe-typecast)
+    │       
+    │       
+    ╰ help: https://getfoundry.sh/forge/linting/unsafe-typecast
+
+warning[reentrancy-events]: event emitted after an external call; reentrancy can reorder or fabricate logs that off-chain consumers rely on
+    ╭▸ src/LuciMarket.sol:676:13
+    │
+676 │             emit Delisted(collection, tokenId, seller);
+    │             ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    │
+    ╰ help: https://getfoundry.sh/forge/linting/reentrancy-events
+
+warning[reentrancy-events]: event emitted after an external call; reentrancy can reorder or fabricate logs that off-chain consumers rely on
+    ╭▸ src/LuciMarket.sol:450:9
+    │
+450 │ ┏         emit BidAccepted(
+451 │ ┃             selector.bidType,
+452 │ ┃             selector.collection,
+453 │ ┃             bidder,
+    ‡ ┃
+458 │ ┃             royaltyAmount
+459 │ ┃         );
+    │ ┗━━━━━━━━━━┛
+    │
+    ╰ help: https://getfoundry.sh/forge/linting/reentrancy-events
+
+warning[block-timestamp]: usage of `block.timestamp` in a comparison may be manipulated by validators
+    ╭▸ src/LuciMarket.sol:475:31
+    │
+475 │         if (expiresAt != 0 && expiresAt < block.timestamp) revert BidExpired();
+    │                               ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    │
+    ╰ help: https://getfoundry.sh/forge/linting/block-timestamp
+
+warning[require-revert-in-loop]: `require` or `revert` inside a loop
+    ╭▸ src/LuciMarket.sol:484:43
+    │
+484 │                 if (tokenBid.amount == 0) revert NoBidExists();
+    │                                           ━━━━━━━━━━━━━━━━━━━━━
+    │
+    ╰ help: https://getfoundry.sh/forge/linting/require-revert-in-loop
+
+warning[require-revert-in-loop]: `require` or `revert` inside a loop
+    ╭▸ src/LuciMarket.sol:636:46
+    │
+636 │         if (!allowedCollections[collection]) revert CollectionNotAllowed();
+    │                                              ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    │
+    ╰ help: https://getfoundry.sh/forge/linting/require-revert-in-loop
+
+warning[require-revert-in-loop]: `require` or `revert` inside a loop
+    ╭▸ src/LuciMarket.sol:491:48
+    │
+491 │                 if (collectionBid.amount == 0) revert NoBidExists();
+    │                                                ━━━━━━━━━━━━━━━━━━━━━
+    │
+    ╰ help: https://getfoundry.sh/forge/linting/require-revert-in-loop
+
+warning[require-revert-in-loop]: `require` or `revert` inside a loop
+    ╭▸ src/LuciMarket.sol:497:47
+    │
+497 │                 if (selectionBid.amount == 0) revert NoBidExists();
+    │                                               ━━━━━━━━━━━━━━━━━━━━━
+    │
+    ╰ help: https://getfoundry.sh/forge/linting/require-revert-in-loop
+
+warning[require-revert-in-loop]: `require` or `revert` inside a loop
+    ╭▸ src/LuciMarket.sol:701:29
+    │
+701 │         if (bidAmount == 0) revert NoBidExists();
+    │                             ━━━━━━━━━━━━━━━━━━━━━
+    │
+    ╰ help: https://getfoundry.sh/forge/linting/require-revert-in-loop
+
+warning[require-revert-in-loop]: `require` or `revert` inside a loop
+    ╭▸ src/LuciMarket.sol:711:29
+    │
+711 │         if (bidAmount == 0) revert NoBidExists();
+    │                             ━━━━━━━━━━━━━━━━━━━━━
+    │
+    ╰ help: https://getfoundry.sh/forge/linting/require-revert-in-loop
+
+warning[require-revert-in-loop]: `require` or `revert` inside a loop
+    ╭▸ src/LuciMarket.sol:721:29
+    │
+721 │         if (bidAmount == 0) revert NoBidExists();
+    │                             ━━━━━━━━━━━━━━━━━━━━━
+    │
+    ╰ help: https://getfoundry.sh/forge/linting/require-revert-in-loop
+
+warning[missing-zero-check]: address parameter is used in a state write or value transfer without a zero-address check
+    ╭▸ src/LuciMarket.sol:578:31
+    │
+578 │     function setSanctionsList(address newSanctionsList) external onlyOwner {
+    │                               ━━━━━━━━━━━━━━━━━━━━━━━━
+    │
+    ╰ help: https://getfoundry.sh/forge/linting/missing-zero-check
+
+warning[block-timestamp]: usage of `block.timestamp` in a comparison may be manipulated by validators
+    ╭▸ src/LuciMarket.sol:653:13
+    │
+653 │         if (block.timestamp > expiresAt) revert ListingExpired();
+    │             ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    │
+    ╰ help: https://getfoundry.sh/forge/linting/block-timestamp
+
+warning[block-timestamp]: usage of `block.timestamp` in a comparison may be manipulated by validators
+    ╭▸ src/LuciMarket.sol:658:31
+    │
+658 │         if (expiresAt != 0 && block.timestamp > expiresAt) revert BidExpired();
+    │                               ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    │
+    ╰ help: https://getfoundry.sh/forge/linting/block-timestamp
+
+warning[arbitrary-send-eth]: ETH is sent to a user-controlled destination; restrict the destination or the caller
+    ╭▸ src/LuciMarket.sol:682:27
+    │
+682 │         (bool success,) = to.call{value: amount, gas: 1e5}("");
+    │                           ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    │
+    ╰ help: https://getfoundry.sh/forge/linting/arbitrary-send-eth
+
+warning[return-bomb]: external call with a gas limit may copy unbounded return data
+    ╭▸ src/LuciMarket.sol:682:27
+    │
+682 │         (bool success,) = to.call{value: amount, gas: 1e5}("");
+    │                           ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    │
+    ╰ help: https://getfoundry.sh/forge/linting/return-bomb
+
+warning[environment-read-across-mutation]: `block.timestamp` may be reused across `vm.warp`
+   ╭▸ test/LuciTestBase.sol:76:13
+   │
+76 │         if (block.timestamp <= 1) vm.warp(2);
+   │             ━━━━━━━━━━━━━━━       ────────── `vm.warp` changes this environment here
+   │
+   ├ help: capture it with `vm.getBlockTimestamp()` instead
+   ╰ help: https://getfoundry.sh/forge/linting/environment-read-across-mutation
+
+warning[environment-read-across-mutation]: `block.timestamp` may be reused across `vm.warp`
+   ╭▸ test/LuciTestBase.sol:72:23
+   │
+72 │         return uint64(block.timestamp + secondsFromNow);
+   │                       ━━━━━━━━━━━━━━━
+   ‡
+76 │         if (block.timestamp <= 1) vm.warp(2);
+   │                                   ────────── `vm.warp` changes this environment here
+   │
+   ├ help: capture it with `vm.getBlockTimestamp()` instead
+   ╰ help: https://getfoundry.sh/forge/linting/environment-read-across-mutation
+
+warning[environment-read-across-mutation]: `block.timestamp` may be reused across `vm.warp`
+    ╭▸ test/LuciTestBase.sol:72:23
+    │
+ 72 │         return uint64(block.timestamp + secondsFromNow);
+    │                       ━━━━━━━━━━━━━━━
+    │
+    ⸬  test/LuciMarket.t.sol:272:9
+    │
+272 │         vm.warp(block.timestamp + 2 days);
+    │         ───────────────────────────────── `vm.warp` changes this environment here
+    │
+    ├ help: capture it with `vm.getBlockTimestamp()` instead
+    ╰ help: https://getfoundry.sh/forge/linting/environment-read-across-mutation
+
+warning[environment-read-across-mutation]: `block.timestamp` may be reused across `vm.warp`
+    ╭▸ test/LuciMarket.t.sol:272:17
+    │
+272 │         vm.warp(block.timestamp + 2 days);
+    │         ────────━━━━━━━━━━━━━━━────────── `vm.warp` changes this environment here
+    │
+    ├ help: capture it with `vm.getBlockTimestamp()` instead
+    ╰ help: https://getfoundry.sh/forge/linting/environment-read-across-mutation
+
+warning[environment-read-across-mutation]: `block.timestamp` may be reused across `vm.warp`
+    ╭▸ test/LuciTestBase.sol:72:23
+    │
+ 72 │         return uint64(block.timestamp + secondsFromNow);
+    │                       ━━━━━━━━━━━━━━━
+    │
+    ⸬  test/LuciMarket.t.sol:401:9
+    │
+401 │         vm.warp(block.timestamp + 2 days);
+    │         ───────────────────────────────── `vm.warp` changes this environment here
+    │
+    ├ help: capture it with `vm.getBlockTimestamp()` instead
+    ╰ help: https://getfoundry.sh/forge/linting/environment-read-across-mutation
+
+warning[environment-read-across-mutation]: `block.timestamp` may be reused across `vm.warp`
+    ╭▸ test/LuciMarket.t.sol:401:17
+    │
+401 │         vm.warp(block.timestamp + 2 days);
+    │         ────────━━━━━━━━━━━━━━━────────── `vm.warp` changes this environment here
+    │
+    ├ help: capture it with `vm.getBlockTimestamp()` instead
+    ╰ help: https://getfoundry.sh/forge/linting/environment-read-across-mutation
+
+warning[environment-read-across-mutation]: `block.timestamp` may be reused across `vm.warp`
+    ╭▸ test/LuciTestBase.sol:72:23
+    │
+ 72 │         return uint64(block.timestamp + secondsFromNow);
+    │                       ━━━━━━━━━━━━━━━
+    │
+    ⸬  test/LuciMarket.t.sol:769:9
+    │
+769 │         vm.warp(initialExpiry + 1);
+    │         ────────────────────────── `vm.warp` changes this environment here
+    │
+    ├ help: capture it with `vm.getBlockTimestamp()` instead
+    ╰ help: https://getfoundry.sh/forge/linting/environment-read-across-mutation
+
+warning[environment-read-across-mutation]: `block.timestamp` may be reused across `vm.revertToState`
+    ╭▸ test/LuciTestBase.sol:72:23
+    │
+ 72 │         return uint64(block.timestamp + secondsFromNow);
+    │                       ━━━━━━━━━━━━━━━
+    │
+    ⸬  test/LuciMarketSelection.t.sol:803:9
+    │
+803 │         vm.revertToState(start);
+    │         ─────────────────────── `vm.revertToState` changes this environment here
+    │
+    ├ help: capture it with `vm.getBlockTimestamp()` instead
+    ╰ help: https://getfoundry.sh/forge/linting/environment-read-across-mutation
+
+warning[environment-read-across-mutation]: `block.timestamp` may be reused across `vm.revertToState`
+    ╭▸ test/LuciTestBase.sol:72:23
+    │
+ 72 │         return uint64(block.timestamp + secondsFromNow);
+    │                       ━━━━━━━━━━━━━━━
+    │
+    ⸬  test/LuciMarketSelection.t.sol:821:13
+    │
+821 │             vm.revertToState(snapshot);
+    │             ────────────────────────── `vm.revertToState` changes this environment here
+    │
+    ├ help: capture it with `vm.getBlockTimestamp()` instead
+    ╰ help: https://getfoundry.sh/forge/linting/environment-read-across-mutation
+
+forge test
+No files changed, compilation skipped
+
+Ran 25 tests for test/LuciMarketIntegration.t.sol:LuciMarketIntegrationTest
+[PASS] test_acceptBidCalculatesRoyaltyAtAcceptance() (gas: 246174)
+[PASS] test_acceptBidRevertsWhenPositiveRoyaltyRecipientIsSanctioned() (gas: 298067)
+[PASS] test_acceptCollectionBidTransfersNftAndDeletesBid() (gas: 258560)
+[PASS] test_acceptSelectionBidTransfersNftClearsBidAndClearsListing() (gas: 383755)
+[PASS] test_acceptTokenBidTransfersNftClearsBidAndClearsListing() (gas: 379181)
+[PASS] test_bidderCanCancelAndRebidSameKeysWithDifferentAmounts() (gas: 479290)
+[PASS] test_buyAllowsSanctionedRoyaltyRecipientWhenRoyaltyIsZero() (gas: 388317)
+[PASS] test_buyCappedCollectionPaysCappedRoyalty() (gas: 333057)
+[PASS] test_buyPrivateListingOnlyDesignatedBuyerCanSettle() (gas: 334968)
+[PASS] test_buyPublicListingTransfersNftClearsListingAndSplitsEth() (gas: 303845)
+[PASS] test_buyRevertsAndRestoresStateWhenRoyaltyRecipientCannotReceiveEth() (gas: 553027)
+[PASS] test_buyRevertsAndRestoresStateWhenSellerCannotReceiveEth() (gas: 665964)
+[PASS] test_buyRevertsWhenPositiveRoyaltyRecipientIsSanctioned() (gas: 331711)
+[PASS] test_buyUsesCurrentRoyaltyRecipientWithLiveAmount() (gas: 309878)
+[PASS] test_buyUsesLiveRoyaltyAmountAfterConfigurationChanges() (gas: 301386)
+[PASS] test_buyUsesReplacementModelRecipientWithLiveAmount() (gas: 283979)
+[PASS] test_cancelBidsRefundsMultipleEscrowsInOneCall() (gas: 261894)
+[PASS] test_cancelExpiredBidsRefundsEscrow() (gas: 284767)
+[PASS] test_listingBlockedByRevokedApprovalCanBeFilledAfterReapproval() (gas: 435712)
+[PASS] test_listingCanBeUpdatedAfterBuyerOrPriceChanges() (gas: 438389)
+[PASS] test_ordersBecomeFillableAgainAfterCollectionIsReallowed() (gas: 623168)
+[PASS] test_selectionBidBecomesFillableAgainAfterTokenIsReallowed() (gas: 1674717)
+[PASS] test_staleListingBecomesFillableAgainWhenSellerReacquiresToken() (gas: 479795)
+[PASS] test_transferFromDoesNotCallReceiverCallback() (gas: 809973)
+[PASS] test_zeroExpiryBidsRemainFillableAfterLongTime() (gas: 787927)
+Suite result: ok. 25 passed; 0 failed; 0 skipped; finished in 7.58ms (5.09ms CPU time)
+
+Ran 4 tests for test/Deploy.t.sol:DeployTest
+[PASS] test_chainFlagChangesGuardedSalt() (gas: 15880)
+[PASS] test_rejectsSaltThatDoesNotStartWithSender(address) (runs: 1024, μ: 9279, ~: 9279)
+[PASS] test_rejectsUnspecifiedProtectionFlag() (gas: 8800)
+[PASS] test_zeroFlagIgnoresChainId() (gas: 15716)
+Suite result: ok. 4 passed; 0 failed; 0 skipped; finished in 418.40ms (417.52ms CPU time)
+
+Ran 38 tests for test/LuciMarket.t.sol:LuciMarketTest
+[PASS] testFuzz_royaltyNeverExceedsMarketCap(uint256) (runs: 1024, μ: 486692, ~: 461163)
+[PASS] test_acceptBidRevertsWhenRoyaltyExceedsCapAndPreservesState() (gas: 436826)
+[PASS] test_acceptTokenBidErrors() (gas: 607769)
+[PASS] test_adminCanManageAllowlistsAndEmitEvents() (gas: 314575)
+[PASS] test_adminCanPauseAndUpdateExternalContracts() (gas: 261396)
+[PASS] test_bidEventsCanonicalizeIgnoredSelectorFields() (gas: 410374)
+[PASS] test_buyRevertsForPrivateBuyerExpiredStaleAndIncorrectPayment() (gas: 556412)
+[PASS] test_buyRevertsWhenPositiveRoyaltyRecipientIsZero() (gas: 569473)
+[PASS] test_buyRevertsWhenRoyaltyExceedsCap() (gas: 618933)
+[PASS] test_buyUsesLiveEthPrice() (gas: 269276)
+[PASS] test_cancelBidsRevertsForMissingBidAndEmptyArray() (gas: 67638)
+[PASS] test_cancelBidsRevertsForMissingTokenAndSelectionBids() (gas: 73567)
+[PASS] test_collectionBidErrors() (gas: 685511)
+[PASS] test_collectionBidLifecycle() (gas: 268392)
+[PASS] test_constructorRevertsForZeroRoyaltyModel() (gas: 6073)
+[PASS] test_constructorSetsOwnerRoyaltyModelAndSanctionsList() (gas: 27120)
+[PASS] test_delistDeletesListingWhilePaused() (gas: 194316)
+[PASS] test_delistRevertsForEmptyArrayOrNonSeller() (gas: 154807)
+[PASS] test_expiredBidsCanBeExtendedAndBecomeFillableAgain() (gas: 1038037)
+[PASS] test_extendBidsCoversEmptyTokenMissingAndSelectionBranches() (gas: 216622)
+[PASS] test_extendBidsRevertsForMissingBidAndExpiredTimestamp() (gas: 76310)
+[PASS] test_extendListingsRevertsForEmptyArrayOrNonSeller() (gas: 166722)
+[PASS] test_extendListingsRevertsForInvalidExpirations() (gas: 80233)
+[PASS] test_extendListingsRevertsWhenApprovalRevoked() (gas: 203234)
+[PASS] test_extendListingsRevertsWhenSellerNoLongerOwnsToken() (gas: 234319)
+[PASS] test_extendListingsUpdatesMultipleListingsAndAllowsExpiredListings() (gas: 309191)
+[PASS] test_listPrivateBuyerStoresListingAndEmits() (gas: 139946)
+[PASS] test_listRevertsForInvalidInputs() (gas: 117441)
+[PASS] test_listRevertsWhenNotOwnerOrApprovedOrAllowed() (gas: 156602)
+[PASS] test_listStoresListingAndEmits() (gas: 115407)
+[PASS] test_pausedBlocksActiveOrderPathsButAllowsCancelAndDelist() (gas: 349997)
+[PASS] test_placeTokenBidErrors() (gas: 183820)
+[PASS] test_removedCollectionBlocksFulfillmentButStillAllowsDelistAndCancel() (gas: 341562)
+[PASS] test_royaltyIsResolvedAtBuyTime() (gas: 300528)
+[PASS] test_sanctionsBlockTradingAndEscrowWithdrawalButAllowDelisting() (gas: 582370)
+[PASS] test_setRoyaltyModelRevertsForZeroAddress() (gas: 34408)
+[PASS] test_tokenBidLifecycle() (gas: 275436)
+[PASS] test_tokenOverrideAllowsTokenAndSelectionBidsButNotCollectionBids() (gas: 1583593)
+Suite result: ok. 38 passed; 0 failed; 0 skipped; finished in 610.37ms (454.96ms CPU time)
+
+Warning: the following cheatcode(s) are deprecated and will be removed in future versions:
+  lastCallGas(): replaced by `lastFrameGas`
+Ran 27 tests for test/LuciMarketSelection.t.sol:LuciMarketSelectionTest
+[PASS] testFuzz_selectionMembershipMatchesReference(uint256[33],uint256,uint256) (runs: 1024, μ: 1421923, ~: 1310570)
+[PASS] testFuzz_selectionUriMatchesHexRoot(bytes32) (runs: 1024, μ: 134256, ~: 134256)
+[PASS] test_acceptRevertsForTokenNotInSelectionAndPreservesState() (gas: 285685)
+[PASS] test_acceptSelectionBidCheckOrder() (gas: 321181)
+[PASS] test_acceptSelectionBidErrors() (gas: 619451)
+[PASS] test_crossCollectionSelectionFillsFromEachCollection() (gas: 567793)
+[PASS] test_eligibilityIsCheckedPerTokenOnAcceptance() (gas: 1816766)
+[PASS] test_emptyProofFillsSingleTokenSelectionsOnly() (gas: 309699)
+[PASS] test_gasSelectionBidsByProofDepth() (gas: 2243198)
+Logs:
+  place token bid: 78347
+  place selection bid: 75618
+  accept token bid: 141670
+  accept selection bid, proof depth 0: 142918
+  accept selection bid, proof depth 7: 151681
+  accept selection bid, proof depth 10: 155464
+  accept selection bid, proof depth 14: 160492
+  accept selection bid, proof depth 17: 164227
+  accept selection bid, proof depth 20: 168106
+
+[PASS] test_membershipEdgeCases() (gas: 209484)
+[PASS] test_openZeppelinStandardMerkleTreeVector() (gas: 45318)
+[PASS] test_outOfRangeBidTypeIsRejectedByAbiDecoding() (gas: 168419)
+[PASS] test_pausedBlocksSelectionBidsButAllowsCancel() (gas: 297063)
+[PASS] test_placeSelectionBidStoresBidAndEmits() (gas: 88403)
+[PASS] test_removedCollectionBlocksItsMembersButNotOtherCollections() (gas: 539391)
+[PASS] test_sanctionsBlockSelectionBids() (gas: 628635)
+[PASS] test_selectionBidEventsCanonicalizeIgnoredSelectorFields() (gas: 210128)
+[PASS] test_selectionBidInputErrors() (gas: 219067)
+[PASS] test_selectionBidLifecycle() (gas: 286291)
+[PASS] test_selectionIsSharedAcrossBidders() (gas: 441956)
+[PASS] test_selectionUriAppendsFullWidthLowercaseRoot() (gas: 199867)
+[PASS] test_selectionUriIsEmptyUntilBaseUriIsSet() (gas: 23654)
+[PASS] test_setSelectionBaseUriRevertsForNonOwner() (gas: 43178)
+[PASS] test_setSelectionBaseUriStoresAndEmits() (gas: 239762)
+[PASS] test_singleHashedLeavesAreRejected() (gas: 27200)
+[PASS] test_tokenAndCollectionBidsIgnoreProof() (gas: 403112)
+[PASS] test_tokenThatLosesAllowedStatusCannotFillWhileOthersCan() (gas: 591830)
+Suite result: ok. 27 passed; 0 failed; 0 skipped; finished in 610.47ms (1.20s CPU time)
+
+Ran 45 tests for test/LuciRoyaltyModel.t.sol:LuciRoyaltyModelTest
+[PASS] testFuzz_calculateRoyaltyInvariants(uint192,uint16,uint256,int256) (runs: 1024, μ: 130225, ~: 131533)
+[PASS] testFuzz_cappedRoyaltyIsNonDecreasingInSalePrice(uint16,uint256,uint256) (runs: 1024, μ: 101665, ~: 104993)
+[PASS] testFuzz_configureCollectionRevertsForCapAboveMax(uint16) (runs: 1024, μ: 37970, ~: 37911)
+[PASS] testFuzz_overrideTokenRevertsForCapAboveMax(uint16) (runs: 1024, μ: 38207, ~: 38148)
+[PASS] test_calculateRoyaltyForUnconfiguredCollectionDefaultsToMaxRoyalty() (gas: 32378)
+[PASS] test_calculateRoyaltyHandlesNonStandardDecimals() (gas: 526597)
+[PASS] test_calculateRoyaltySlidingScale() (gas: 42038)
+[PASS] test_calculateRoyaltySlidingScaleHasNoBpsDeadZone() (gas: 42109)
+[PASS] test_calculateRoyaltyTracksEthPriceMoves() (gas: 161512)
+[PASS] test_calculateRoyaltyUsesExpectedThresholds() (gas: 131549)
+[PASS] test_cappedCollectionFallsBackToCapWhenConversionFails() (gas: 87990)
+[PASS] test_cappedCollectionSlidesUpToItsCap() (gas: 169241)
+[PASS] test_cappedCollectionWithZeroMintPricePaysCap() (gas: 52656)
+[PASS] test_clearTokenOverrideRestoresCollectionCap() (gas: 147395)
+[PASS] test_clearTokenOverrideRestoresCollectionMintAndEmits() (gas: 127683)
+[PASS] test_configureCollectionStoresMintPriceAndCapAndEmits() (gas: 66239)
+[PASS] test_configureCurrencyRevertsForInvalidInputs() (gas: 116412)
+[PASS] test_configureCurrencyStoresConfigAndEmits() (gas: 424083)
+[PASS] test_constructorRevertsForZeroRecipient() (gas: 5997)
+[PASS] test_constructorSetsOwnerAndRecipient() (gas: 19580)
+[PASS] test_fallsBackToMaxRoyaltyForNonPositiveAnswer() (gas: 133764)
+[PASS] test_fallsBackToMaxRoyaltyForRemovedCurrency() (gas: 48928)
+[PASS] test_fallsBackToMaxRoyaltyForStaleAnswer() (gas: 31473)
+[PASS] test_fallsBackToMaxRoyaltyForUnregisteredCurrency() (gas: 22120)
+[PASS] test_fallsBackToMaxRoyaltyForZeroOrFutureUpdatedAt() (gas: 129059)
+[PASS] test_fallsBackToMaxRoyaltyWhenAnswerWouldOverflow() (gas: 62839)
+[PASS] test_fallsBackToMaxRoyaltyWhenConfiguredDecimalsAreWrong() (gas: 72339)
+[PASS] test_fallsBackToMaxRoyaltyWhenConversionWouldOverflow() (gas: 67605)
+[PASS] test_fallsBackToMaxRoyaltyWhenDecimalsRevert() (gas: 78024)
+[PASS] test_fallsBackToMaxRoyaltyWhenLiveDecimalsExceedMax() (gas: 63281)
+[PASS] test_fallsBackToMaxRoyaltyWhenLiveOracleDecimalsDiffer() (gas: 93701)
+[PASS] test_fallsBackToMaxRoyaltyWhenOracleReverts() (gas: 72062)
+[PASS] test_maxRoyaltyBpsMirrorMatchesModel() (gas: 5573)
+[PASS] test_onlyOwnerCanClearTokenOverride() (gas: 37283)
+[PASS] test_onlyOwnerCanConfigureCollection() (gas: 37633)
+[PASS] test_onlyOwnerCanConfigureOrRemoveCurrency() (gas: 63547)
+[PASS] test_onlyOwnerCanOverrideToken() (gas: 37879)
+[PASS] test_onlyOwnerCanSetRoyaltyRecipient() (gas: 36396)
+[PASS] test_overrideTokenTakesPrecedenceAndEmits() (gas: 99145)
+[PASS] test_removeCurrencyClearsConfigAndEmits() (gas: 40883)
+[PASS] test_setRoyaltyRecipientRevertsForZeroAddress() (gas: 34355)
+[PASS] test_setRoyaltyRecipientUpdatesAndEmits() (gas: 49415)
+[PASS] test_tokenOverrideCapAppliesToUnconfiguredCollection() (gas: 98145)
+[PASS] test_tokenOverrideCapTakesPrecedenceOverCollectionCap() (gas: 219991)
+[PASS] test_zeroCapIsRoyaltyFreeWithoutConsultingFeed() (gas: 120016)
+Suite result: ok. 45 passed; 0 failed; 0 skipped; finished in 625.22ms (688.02ms CPU time)
+
+Ran 1 test for test/LuciMarketIntegration.t.sol:LuciMarketEscrowInvariantTest
+[PASS]
+LuciMarketEscrowInvariantTest invariants:
+[PASS] invariant_marketBalanceEqualsHandlerActiveEscrow
+[PASS] invariant_tokenBidStorageMatchesHandlerAccounting
+ LuciMarketEscrowInvariantTest invariants (runs: 1024, calls: 512000, reverts: 0)
+
+╭-----------------------+----------+--------+---------+----------╮
+| Contract              | Selector | Calls  | Reverts | Discards |
++================================================================+
+| TokenBidEscrowHandler | cancel   | 127661 | 0       | 0        |
+|-----------------------+----------+--------+---------+----------|
+| TokenBidEscrowHandler | extend   | 128724 | 0       | 0        |
+|-----------------------+----------+--------+---------+----------|
+| TokenBidEscrowHandler | increase | 127906 | 0       | 0        |
+|-----------------------+----------+--------+---------+----------|
+| TokenBidEscrowHandler | place    | 127709 | 0       | 0        |
+╰-----------------------+----------+--------+---------+----------╯
+
+Suite result: ok. 1 passed; 0 failed; 0 skipped; finished in 22.08s (22.07s CPU time)
+
+Ran 6 test suites in 22.08s (24.35s CPU time): 140 tests passed, 0 failed, 0 skipped (140 total tests)

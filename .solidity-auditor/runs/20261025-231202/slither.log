@@ -1,0 +1,65 @@
+'forge clean' running (wd: /Users/mpeyfuss/MP/luci-market)
+'forge config --json' running
+'forge build --build-info --deny never --skip ./test/** ./script/** --force' running (wd: /Users/mpeyfuss/MP/luci-market)
+INFO:Detectors:
+Detector: arbitrary-send-eth
+LuciMarket._safeTransferEth(address,uint256) (src/LuciMarket.sol#681-684) sends eth to arbitrary user
+	Dangerous calls:
+	- (success,None) = to.call{gas: 1e5,value: amount}() (src/LuciMarket.sol#682)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#functions-that-send-ether-to-arbitrary-destinations
+INFO:Detectors:
+Detector: unused-return
+LuciRoyaltyModel._toUsd(uint256,address) (src/LuciRoyaltyModel.sol#265-294) ignores return value by (answer,updatedAt) = IAggregatorV3(config.oracle).latestRoundData() (src/LuciRoyaltyModel.sol#269-293)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#unused-return
+INFO:Detectors:
+Detector: missing-zero-check
+LuciMarket.constructor(address,address,address).initSanctionsList (src/LuciMarket.sol#214) lacks a zero-check on :
+		- sanctionsList = initSanctionsList (src/LuciMarket.sol#217)
+LuciMarket.setSanctionsList(address).newSanctionsList (src/LuciMarket.sol#578) lacks a zero-check on :
+		- sanctionsList = newSanctionsList (src/LuciMarket.sol#580)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#missing-zero-address-validation
+INFO:Detectors:
+Detector: calls-loop
+LuciMarket.extendListings(LuciMarket.Token[],uint64) (src/LuciMarket.sol#254-278) has external calls inside a loop: nft.ownerOf(token.tokenId) != msg.sender (src/LuciMarket.sol#271)
+LuciMarket._isApproved(IERC721,address,uint256) (src/LuciMarket.sol#647-649) has external calls inside a loop: nft.isApprovedForAll(owner,address(this)) || nft.getApproved(tokenId) == address(this) (src/LuciMarket.sol#648)
+	Calls stack containing the loop:
+		LuciMarket.extendListings(LuciMarket.Token[],uint64)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation/#calls-inside-a-loop
+INFO:Detectors:
+Detector: return-bomb
+LuciMarket._safeTransferEth(address,uint256) (src/LuciMarket.sol#681-684) tries to limit the gas of an external call that controls implicit decoding
+	(success,None) = to.call{gas: 1e5,value: amount}() (src/LuciMarket.sol#682)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#return-bomb
+INFO:Detectors:
+Detector: timestamp
+LuciMarket.list(address,uint256,uint256,uint64,address) (src/LuciMarket.sol#227-247) uses timestamp for comparisons
+	Dangerous comparisons:
+	- expiresAt < block.timestamp (src/LuciMarket.sol#236)
+	- expiresAt - uint64(block.timestamp) > MAX_LISTING_DURATION (src/LuciMarket.sol#237)
+LuciMarket.extendListings(LuciMarket.Token[],uint64) (src/LuciMarket.sol#254-278) uses timestamp for comparisons
+	Dangerous comparisons:
+	- expiresAt < block.timestamp (src/LuciMarket.sol#260)
+	- expiresAt - uint64(block.timestamp) > MAX_LISTING_DURATION (src/LuciMarket.sol#261)
+LuciMarket.placeBid(LuciMarket.BidSelector,uint64) (src/LuciMarket.sol#328-359) uses timestamp for comparisons
+	Dangerous comparisons:
+	- expiresAt != 0 && expiresAt < block.timestamp (src/LuciMarket.sol#332)
+LuciMarket.extendBids(LuciMarket.BidSelector[],uint64) (src/LuciMarket.sol#470-502) uses timestamp for comparisons
+	Dangerous comparisons:
+	- expiresAt != 0 && expiresAt < block.timestamp (src/LuciMarket.sol#475)
+LuciMarket._checkListingNotExpired(uint64) (src/LuciMarket.sol#652-654) uses timestamp for comparisons
+	Dangerous comparisons:
+	- block.timestamp > expiresAt (src/LuciMarket.sol#653)
+LuciMarket._checkBidNotExpired(uint64) (src/LuciMarket.sol#657-659) uses timestamp for comparisons
+	Dangerous comparisons:
+	- expiresAt != 0 && block.timestamp > expiresAt (src/LuciMarket.sol#658)
+LuciRoyaltyModel._isUsableRound(int256,uint256,uint32) (src/LuciRoyaltyModel.sol#297-303) uses timestamp for comparisons
+	Dangerous comparisons:
+	- updatedAt == 0 || updatedAt > block.timestamp (src/LuciRoyaltyModel.sol#299)
+	- block.timestamp - updatedAt > maxAge (src/LuciRoyaltyModel.sol#300)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#block-timestamp
+INFO:Detectors:
+Detector: low-level-calls
+Low level call in LuciMarket._safeTransferEth(address,uint256) (src/LuciMarket.sol#681-684):
+	- (success,None) = to.call{gas: 1e5,value: amount}() (src/LuciMarket.sol#682)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#low-level-calls
+INFO:Slither:. analyzed (19 contracts with 102 detectors), 15 result(s) found

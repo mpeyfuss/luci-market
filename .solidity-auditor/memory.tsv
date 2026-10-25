@@ -1,2 +1,2 @@
 #solidity-auditor-memory v1	key	status	scans	sha	title	kind
-lucimarket|buy|stale-listing-reactivation	NEW	1	0615a10	A returned NFT revives an old listing	FINDING
+lucimarket|buy|stale-listing-reactivation	KNOWN	2	cf6a0c2	A returned NFT revives an old listing	FINDING
