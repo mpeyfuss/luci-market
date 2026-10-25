@@ -1,0 +1,111 @@
+{
+  "title": "Luci Market Architecture",
+  "nodes": [
+    {
+      "id": "users",
+      "label": "Collectors",
+      "subtitle": "Sellers and bidders",
+      "type": "actor",
+      "row": 0
+    },
+    {
+      "id": "site",
+      "label": "Site and indexer",
+      "subtitle": "Trees, proofs, discovery",
+      "type": "external",
+      "row": 0
+    },
+    {
+      "id": "owner",
+      "label": "Marketplace owner",
+      "subtitle": "Immediate configuration",
+      "type": "actor",
+      "row": 0
+    },
+    {
+      "id": "market",
+      "label": "LuciMarket",
+      "subtitle": "Orders and ETH escrow",
+      "type": "protocol",
+      "row": 1
+    },
+    {
+      "id": "nft",
+      "label": "Allowed ERC721s",
+      "subtitle": "NFT ownership",
+      "type": "external",
+      "row": 2
+    },
+    {
+      "id": "sanctions",
+      "label": "Sanctions list",
+      "subtitle": "Address screening",
+      "type": "external",
+      "row": 2
+    },
+    {
+      "id": "royalty",
+      "label": "LuciRoyaltyModel",
+      "subtitle": "USD royalty policy",
+      "type": "protocol",
+      "row": 2
+    },
+    {
+      "id": "feed",
+      "label": "Price feed",
+      "subtitle": "ETH / USD",
+      "type": "external",
+      "row": 3
+    },
+    {
+      "id": "r_owner",
+      "label": "Royalty owner",
+      "subtitle": "Immediate configuration",
+      "type": "actor",
+      "row": 3
+    }
+  ],
+  "edges": [
+    {
+      "from": "users",
+      "to": "market",
+      "label": "orders and ETH"
+    },
+    {
+      "from": "site",
+      "to": "users",
+      "label": "discovery and proofs"
+    },
+    {
+      "from": "owner",
+      "to": "market",
+      "label": "configure and pause"
+    },
+    {
+      "from": "market",
+      "to": "nft",
+      "label": "transfer NFT"
+    },
+    {
+      "from": "market",
+      "to": "sanctions",
+      "label": "screen addresses"
+    },
+    {
+      "from": "market",
+      "to": "royalty",
+      "label": "calculate royalty"
+    },
+    {
+      "from": "royalty",
+      "to": "feed",
+      "label": "read price"
+    },
+    {
+      "from": "r_owner",
+      "to": "royalty",
+      "label": "configure policy"
+    }
+  ],
+  "groups": []
+}

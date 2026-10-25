@@ -30,6 +30,10 @@ abstract contract LuciTestBase is Test {
     uint256 internal constant MINT_PRICE = 5 ether;
     uint192 internal constant MINT_PRICE_USD = 10_000e8;
 
+    /// @dev Mirrors `LuciRoyaltyModel.MAX_ROYALTY_BPS` (asserted in the royalty model tests) so it can be passed
+    ///      as a literal argument inside a prank
+    uint16 internal constant MAX_ROYALTY_BPS = 1_000;
+
     LuciRoyaltyModel internal royaltyModel;
     LuciMarket internal market;
     MockERC721 internal nft;
@@ -50,7 +54,7 @@ abstract contract LuciTestBase is Test {
         royaltyModel.configureCurrency(address(0), address(ethUsdFeed), 18, FEED_DECIMALS, FEED_MAX_AGE);
 
         vm.prank(owner);
-        royaltyModel.configureCollection(address(nft), MINT_PRICE_USD);
+        royaltyModel.configureCollection(address(nft), MINT_PRICE_USD, MAX_ROYALTY_BPS);
 
         nft.mint(seller, TOKEN_ID);
         nft.mint(seller, TOKEN_ID_TWO);

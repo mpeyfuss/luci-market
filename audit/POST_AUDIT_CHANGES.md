@@ -37,7 +37,8 @@ Everything else in this document follows from that decision.
 
 The royalty is still transacted in ETH. Only the percentage is determined in USD: the sale price is converted
 to USD, the basis points are derived from the USD comparison, and those basis points are then applied to the
-sale price in its *original currency*.
+gross sale price in its *original currency*. Appreciation above mint sets the percentage; the model does not
+charge a percentage of profit.
 
 ### Consequence: on-chain oracles in the royalty path
 
@@ -71,7 +72,9 @@ time drifts against the ETH/USD rate and settles at the wrong percentage. Both t
 amount are resolved live in `buy()`, matching what `acceptBid()` already did.
 
 Seller proceeds on an open listing move with the ETH/USD rate. That is a seller-visible behavior change, not
-an internal refactor.
+an internal refactor. The design intentionally does not add an order-specific proceeds floor: over the intended
+order horizons such a bound would become stale, while the marketplace's independent 10% ceiling guarantees that
+every successful settlement pays the seller at least 90% of the gross sale price.
 
 ### Public interface changes
 
@@ -90,7 +93,9 @@ Nothing is deployed and the contracts are not upgradeable, so the storage layout
 `configureCurrency` and `removeCurrency` on `LuciRoyaltyModel`, with the `currencies` registry (allowed flag,
 currency decimals, owner-declared oracle decimals, staleness window, oracle address), plus `clearTokenOverride`.
 This widens what a compromised royalty-model owner key can do: previously an arbitrary mint price or recipient,
-now also an arbitrary price source.
+now also an arbitrary price source. The intended production deployment transfers both ownership domains to
+timelock controllers governed by a multisig. Those controls are operational and are not enforced by the source
+contracts themselves.
 
 ### New safety bound
 
@@ -168,6 +173,80 @@ Change in trust assumptions:
   metadata can still change.
 
 Listings, token bids, collection bids, royalties, settlement, and sanctions are unchanged by this work.
+
+### Per-collection and per-token royalty caps
+
+The sliding scale's ceiling is no longer fixed at 10% for every collection. `CollectionConfig` and
+`TokenOverride` each gained a `uint16 maxRoyaltyBps` (packed into the existing slot), and the scale runs from
+0% at the mint price to that cap at 2x mint. The curve's shape and thresholds are unchanged.
+
+- `configureCollection(collection, mintPriceUsd)` becomes `configureCollection(collection, mintPriceUsd, maxRoyaltyBps)`.
+- `overrideToken(collection, tokenId, mintPriceUsd)` becomes `overrideToken(collection, tokenId, mintPriceUsd, maxRoyaltyBps)`.
+  An enabled override's cap takes precedence over the collection's.
+- `CollectionConfigured` and `TokenOverriden` gained a trailing, non-indexed `maxRoyaltyBps`.
+- The `collections` and `tokenOverrides` getters now return `(bool, uint16, uint192)`.
+- Added the `InvalidRoyaltyBps` error. Both setters revert when the cap exceeds `MAX_ROYALTY_BPS`.
+
+Behavior changes:
+
+- Fallbacks charge the applicable cap rather than a flat 10%: a zero mint price and every failed USD conversion.
+- A cap of `0` returns zero without calling the price feed.
+- `calculateRoyalty` now reads the previously unused `configured` flag. A collection with no configuration and
+  no token override still charges `MAX_ROYALTY_BPS`, as before. Without that check its zero cap would read as
+  royalty free.
+
+`LuciMarket` is unchanged. Its 10% settlement ceiling still bounds every cap.
+
+### Selection tree location
+
+Integrators had no on-chain way to find the tree behind a selection root. `LuciMarket` now exposes one.
+
+- Added `selectionBaseUri` (owner-set string) and `setSelectionBaseUri(string)`, emitting
+  `SelectionBaseUriUpdated(oldSelectionBaseUri, newSelectionBaseUri)`.
+- Added `selectionUri(bytes32 selectionRoot)`, returning the base URI followed by the root as `0x`-prefixed
+  lowercase hex (66 characters), or an empty string when no base URI is set. It uses OpenZeppelin's `Strings`.
+
+The change is additive: no existing function, event, error, or struct changes. Settlement never reads the URI,
+so it adds no trust to fills. The owner can point integrators at a different location, but any tree fetched
+there must still hash to the root the bid was placed on.
+
+## Acknowledged Findings
+
+Findings from the post-audit internal review that are accepted by design and not fixed in code.
+
+### A returned NFT revives an old listing
+
+Source: `.solidity-auditor/runs/20261025-002500/full-report.md`, finding 1.
+
+**Finding.** Listings are not invalidated when a token leaves the seller's wallet. If the token comes back
+to the seller before the listing expires, and the marketplace is still approved, `buy()` fills the old
+listing at its original price. Settlement only checks the current state: `transferFrom(listing.seller, ...)`
+requires the stored seller to own the token and the marketplace to be approved at that moment.
+
+**Status: acknowledged, by design.** Listings are non-custodial. Without escrow, the contract cannot see
+transfers that happen outside it, because ERC-721 has no transfer hook for third parties. The only ways to
+detect a round trip are escrowing the NFT, which the design rules out, or a trusted party that invalidates
+listings offchain, which adds centralization. Neither is acceptable.
+
+**Proposed fix rejected.** The report suggests requiring `getApproved(tokenId) == address(this)` instead of
+`_isApproved`. Per-token approvals are cleared on transfer, but this does not fix the issue:
+
+- Sellers who approved the marketplace with `setApprovalForAll` still have that approval after the token
+  returns, so the listing can still be filled. These sellers would also be locked out of listing at all,
+  which breaks the standard approval flow `_isApproved` supports on purpose.
+- A seller who approves the token again after getting it back makes the old listing fillable anyway.
+- The diff is placed in `buy()`, but the `_isApproved` check it replaces is in `list()` and
+  `extendListings()`.
+
+**Existing mitigations.**
+
+- The affected party is the seller who set the listing price, and `delist` is always available to them,
+  including while the marketplace is paused.
+- `extendListings` requires current ownership and approval, so a stale listing cannot be kept alive. It
+  lapses at its original expiry, at most `MAX_LISTING_DURATION` (180 days) after it was set.
+- Calling `list` again for the token overwrites the stored listing, and accepting any bid on the token
+  clears it.
+- The README documents the behavior and requires frontends and indexers to filter stale listings.
 
 ## Review Status
 

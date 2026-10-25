@@ -12,6 +12,8 @@ contract LuciMarketSelectionTest is LuciTestBase {
     MockERC721 internal nftTwo; // second allowed collection
     MockERC721 internal shared; // not allowed - only TOKEN_ID is individually allowed
 
+    string internal constant SELECTION_BASE_URI = "https://cdn.samspratt.com/merkle/";
+
     function setUp() public override {
         super.setUp();
         nftTwo = new MockERC721();
@@ -19,7 +21,7 @@ contract LuciMarketSelectionTest is LuciTestBase {
 
         vm.startPrank(owner);
         market.addCollection(address(nftTwo));
-        royaltyModel.configureCollection(address(nftTwo), MINT_PRICE_USD);
+        royaltyModel.configureCollection(address(nftTwo), MINT_PRICE_USD, MAX_ROYALTY_BPS);
         market.addToken(address(shared), TOKEN_ID);
         vm.stopPrank();
 
@@ -674,8 +676,71 @@ contract LuciMarketSelectionTest is LuciTestBase {
     }
 
     /////////////////////////////////////////////////////////////////////
+    // SELECTION URI
+    /////////////////////////////////////////////////////////////////////
+
+    function test_selectionUriIsEmptyUntilBaseUriIsSet() public view {
+        assertEq(market.selectionBaseUri(), "");
+        assertEq(market.selectionUri(keccak256("root")), "");
+    }
+
+    function test_setSelectionBaseUriStoresAndEmits() public {
+        vm.expectEmit(false, false, false, true, address(market));
+        emit LuciMarket.SelectionBaseUriUpdated("", SELECTION_BASE_URI);
+        vm.prank(owner);
+        market.setSelectionBaseUri(SELECTION_BASE_URI);
+        assertEq(market.selectionBaseUri(), SELECTION_BASE_URI);
+
+        string memory newBaseUri = "https://api.samspratt.com/selections/";
+        vm.expectEmit(false, false, false, true, address(market));
+        emit LuciMarket.SelectionBaseUriUpdated(SELECTION_BASE_URI, newBaseUri);
+        vm.prank(owner);
+        market.setSelectionBaseUri(newBaseUri);
+        assertEq(market.selectionBaseUri(), newBaseUri);
+
+        // clearing the base URI turns the helper off again
+        vm.expectEmit(false, false, false, true, address(market));
+        emit LuciMarket.SelectionBaseUriUpdated(newBaseUri, "");
+        vm.prank(owner);
+        market.setSelectionBaseUri("");
+        assertEq(market.selectionUri(keccak256("root")), "");
+    }
+
+    function test_setSelectionBaseUriRevertsForNonOwner() public {
+        _expectOwnableUnauthorized(other);
+        vm.prank(other);
+        market.setSelectionBaseUri(SELECTION_BASE_URI);
+        assertEq(market.selectionBaseUri(), "");
+    }
+
+    function test_selectionUriAppendsFullWidthLowercaseRoot() public {
+        vm.prank(owner);
+        market.setSelectionBaseUri(SELECTION_BASE_URI);
+
+        // leading zeros are kept so every root maps to a 66 character key
+        assertEq(
+            market.selectionUri(bytes32(uint256(0xab))),
+            "https://cdn.samspratt.com/merkle/0x00000000000000000000000000000000000000000000000000000000000000ab"
+        );
+        assertEq(
+            market.selectionUri(bytes32(type(uint256).max)),
+            "https://cdn.samspratt.com/merkle/0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        );
+
+        bytes32 selectionRoot = _merkleRoot(_tokens(address(nft), TOKEN_ID, TOKEN_ID_TWO));
+        assertEq(bytes(market.selectionUri(selectionRoot)).length, bytes(SELECTION_BASE_URI).length + 66);
+    }
+
+    /////////////////////////////////////////////////////////////////////
     // FUZZ
     /////////////////////////////////////////////////////////////////////
+
+    /// @dev Matches the `bytes32` formatting integrators get from viem, ethers, and `vm.toString`
+    function testFuzz_selectionUriMatchesHexRoot(bytes32 selectionRoot) public {
+        vm.prank(owner);
+        market.setSelectionBaseUri(SELECTION_BASE_URI);
+        assertEq(market.selectionUri(selectionRoot), string.concat(SELECTION_BASE_URI, vm.toString(selectionRoot)));
+    }
 
     /// @dev Builds a random cross-collection tree and checks every proof against a reference: a member's proof
     ///      verifies exactly the tokens equal to that member

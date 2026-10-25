@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1252" height="645" viewBox="0 0 501 258" font-family="Arial, sans-serif">
+  <defs>
+    <marker id="ah" viewBox="0 0 8 6" refX="8" refY="3"
+      markerWidth="4" markerHeight="3" orient="auto">
+      <path d="M0.5,0.5 L7,3 L0.5,5.5" fill="none" stroke="#94A3B8"
+        stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/>
+    </marker>
+    <filter id="shadow" x="-6%" y="-8%" width="112%" height="128%">
+      <feDropShadow dx="0" dy="0.5" stdDeviation="0.8"
+        flood-color="#000" flood-opacity="0.05"/>
+    </filter>
+  </defs>
+  <rect width="501" height="258" fill="#F8F9FB" rx="3"/>
+  <text x="250" y="11" text-anchor="middle" font-size="6" font-weight="700" fill="#1E293B">Luci Market Architecture</text>
+  <rect x="175" y="16" width="150" height="10" rx="3" fill="#fff" stroke="#E2E5EA" stroke-width="0.4"/>
+  <rect x="180" y="18.5" width="5" height="5" rx="2.5" fill="#fff" stroke="#E2E5EA" stroke-width="0.4"/>
+  <text x="188" y="22.5" font-size="3.5" fill="#1E293B">Actor</text>
+  <rect x="220" y="18.5" width="5" height="5" rx="1.5" fill="#fff" stroke="#E2E5EA" stroke-width="0.4"/>
+  <rect x="221" y="19.5" width="0.8" height="3" rx="0.4" fill="#3B82F6"/>
+  <text x="228" y="22.5" font-size="3.5" fill="#1E293B">Protocol</text>
+  <rect x="268" y="18.5" width="5" height="5" rx="1.5" fill="#fff" stroke="#E2E5EA" stroke-width="0.4"/>
+  <rect x="269" y="19.5" width="0.8" height="3" rx="0.4" fill="#F59E0B"/>
+  <text x="276" y="22.5" font-size="3.5" fill="#1E293B">External</text>
+  <path d="M74.2,46.0 C74.2,70.0 147.7,70.0 147.7,94.0" fill="none" stroke="#94A3B8" stroke-width="0.5" marker-end="url(#ah)"/>
+  <path d="M140.4,50.0 C133.8,68.0 125.0,68.0 118.4,46.0" fill="none" stroke="#94A3B8" stroke-width="0.5" marker-end="url(#ah)"/>
+  <path d="M320.2,46.0 C320.2,70.0 147.7,70.0 147.7,94.0" fill="none" stroke="#94A3B8" stroke-width="0.5" marker-end="url(#ah)"/>
+  <path d="M147.7,114.0 C147.7,135.0 103.0,135.0 103.0,156.0" fill="none" stroke="#94A3B8" stroke-width="0.5" marker-end="url(#ah)"/>
+  <path d="M147.7,114.0 C147.7,135.0 214.6,135.0 214.6,156.0" fill="none" stroke="#94A3B8" stroke-width="0.5" marker-end="url(#ah)"/>
+  <path d="M147.7,114.0 C147.7,135.0 328.6,135.0 328.6,156.0" fill="none" stroke="#94A3B8" stroke-width="0.5" marker-end="url(#ah)"/>
+  <path d="M328.6,176.0 C328.6,197.0 312.1,197.0 312.1,218.0" fill="none" stroke="#94A3B8" stroke-width="0.5" marker-end="url(#ah)"/>
+  <path d="M419.5,218.0 C419.5,197.0 328.6,197.0 328.6,176.0" fill="none" stroke="#94A3B8" stroke-width="0.5" marker-end="url(#ah)"/>
+  <g filter="url(#shadow)">
+    <rect x="30.0" y="32.0" width="88.4" height="14" rx="7" fill="#fff" stroke="#E2E5EA" stroke-width="0.5"/>
+    <text x="74.2" y="40.8" text-anchor="middle" font-size="4.8" font-weight="600" fill="#1E293B">Collectors</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="140.4" y="32.0" width="106.4" height="20" rx="3" fill="#fff" stroke="#E2E5EA" stroke-width="0.5"/>
+    <rect x="143.4" y="35.0" width="1.4" height="14" rx="0.6" fill="#F59E0B"/>
+    <text x="193.6" y="41.5" text-anchor="middle" font-size="4.8" font-weight="600" fill="#1E293B">Site and indexer</text>
+    <text x="193.6" y="46.5" text-anchor="middle" font-size="3.5" fill="#64748B">Trees, proofs, discovery</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="268.8" y="32.0" width="102.8" height="14" rx="7" fill="#fff" stroke="#E2E5EA" stroke-width="0.5"/>
+    <text x="320.2" y="40.8" text-anchor="middle" font-size="4.8" font-weight="600" fill="#1E293B">Marketplace owner</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="99.9" y="94.0" width="95.6" height="20" rx="3" fill="#fff" stroke="#E2E5EA" stroke-width="0.5"/>
+    <rect x="102.9" y="97.0" width="1.4" height="14" rx="0.6" fill="#3B82F6"/>
+    <text x="147.7" y="103.5" text-anchor="middle" font-size="4.8" font-weight="600" fill="#1E293B">LuciMarket</text>
+    <text x="147.7" y="108.5" text-anchor="middle" font-size="3.5" fill="#64748B">Orders and ETH escrow</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="57.0" y="156.0" width="92.0" height="20" rx="3" fill="#fff" stroke="#E2E5EA" stroke-width="0.5"/>
+    <rect x="60.0" y="159.0" width="1.4" height="14" rx="0.6" fill="#F59E0B"/>
+    <text x="103.0" y="165.5" text-anchor="middle" font-size="4.8" font-weight="600" fill="#1E293B">Allowed ERC721s</text>
+    <text x="103.0" y="170.5" text-anchor="middle" font-size="3.5" fill="#64748B">NFT ownership</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="171.0" y="156.0" width="87.2" height="20" rx="3" fill="#fff" stroke="#E2E5EA" stroke-width="0.5"/>
+    <rect x="174.0" y="159.0" width="1.4" height="14" rx="0.6" fill="#F59E0B"/>
+    <text x="214.6" y="165.5" text-anchor="middle" font-size="4.8" font-weight="600" fill="#1E293B">Sanctions list</text>
+    <text x="214.6" y="170.5" text-anchor="middle" font-size="3.5" fill="#64748B">Address screening</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="280.2" y="156.0" width="96.8" height="20" rx="3" fill="#fff" stroke="#E2E5EA" stroke-width="0.5"/>
+    <rect x="283.2" y="159.0" width="1.4" height="14" rx="0.6" fill="#3B82F6"/>
+    <text x="328.6" y="165.5" text-anchor="middle" font-size="4.8" font-weight="600" fill="#1E293B">LuciRoyaltyModel</text>
+    <text x="328.6" y="170.5" text-anchor="middle" font-size="3.5" fill="#64748B">USD royalty policy</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="278.1" y="218.0" width="68.0" height="20" rx="3" fill="#fff" stroke="#E2E5EA" stroke-width="0.5"/>
+    <rect x="281.1" y="221.0" width="1.4" height="14" rx="0.6" fill="#F59E0B"/>
+    <text x="312.1" y="227.5" text-anchor="middle" font-size="4.8" font-weight="600" fill="#1E293B">Price feed</text>
+    <text x="312.1" y="232.5" text-anchor="middle" font-size="3.5" fill="#64748B">ETH / USD</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="368.1" y="218.0" width="102.8" height="14" rx="7" fill="#fff" stroke="#E2E5EA" stroke-width="0.5"/>
+    <text x="419.5" y="226.8" text-anchor="middle" font-size="4.8" font-weight="600" fill="#1E293B">Royalty owner</text>
+  </g>
+  <rect x="92.1" y="65.0" width="37.6" height="6.0" rx="1" fill="#F8F9FB"/>
+  <text x="110.9" y="70.0" font-size="4" fill="#1E293B" font-weight="500" text-anchor="middle">orders and ETH</text>
+  <rect x="103.4" y="75.0" width="52.0" height="6.0" rx="1" fill="#F8F9FB"/>
+  <text x="129.4" y="80.0" font-size="4" fill="#1E293B" font-weight="500" text-anchor="middle">discovery and proofs</text>
+  <rect x="209.1" y="65.0" width="49.6" height="6.0" rx="1" fill="#F8F9FB"/>
+  <text x="233.9" y="70.0" font-size="4" fill="#1E293B" font-weight="500" text-anchor="middle">configure and pause</text>
+  <rect x="108.9" y="130.0" width="32.8" height="6.0" rx="1" fill="#F8F9FB"/>
+  <text x="125.3" y="135.0" font-size="4" fill="#1E293B" font-weight="500" text-anchor="middle">transfer NFT</text>
+  <rect x="159.9" y="130.0" width="42.4" height="6.0" rx="1" fill="#F8F9FB"/>
+  <text x="181.1" y="135.0" font-size="4" fill="#1E293B" font-weight="500" text-anchor="middle">screen addresses</text>
+  <rect x="215.7" y="130.0" width="44.8" height="6.0" rx="1" fill="#F8F9FB"/>
+  <text x="238.1" y="135.0" font-size="4" fill="#1E293B" font-weight="500" text-anchor="middle">calculate royalty</text>
+  <rect x="306.4" y="192.0" width="28.0" height="6.0" rx="1" fill="#F8F9FB"/>
+  <text x="320.4" y="197.0" font-size="4" fill="#1E293B" font-weight="500" text-anchor="middle">read price</text>
+  <rect x="352.9" y="192.0" width="42.4" height="6.0" rx="1" fill="#F8F9FB"/>
+  <text x="374.1" y="197.0" font-size="4" fill="#1E293B" font-weight="500" text-anchor="middle">configure policy</text>
+</svg>

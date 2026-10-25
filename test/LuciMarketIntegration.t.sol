@@ -26,6 +26,25 @@ contract LuciMarketIntegrationTest is LuciTestBase {
         assertEq(listingSeller, address(0));
     }
 
+    function test_buyCappedCollectionPaysCappedRoyalty() public {
+        // 10 ETH = $20,000 vs a $10,000 mint -> top of the scale, capped at 5%
+        vm.prank(owner);
+        royaltyModel.configureCollection(address(nft), MINT_PRICE_USD, 500);
+        _list(TOKEN_ID, PRICE, address(0));
+        uint256 sellerBefore = seller.balance;
+        uint256 recipientBefore = royaltyRecipient.balance;
+
+        vm.expectEmit(true, true, true, true, address(market));
+        emit LuciMarket.Sold(address(nft), TOKEN_ID, buyer, seller, PRICE, 0.5 ether);
+        vm.prank(buyer);
+        market.buy{value: PRICE}(address(nft), TOKEN_ID);
+
+        assertEq(nft.ownerOf(TOKEN_ID), buyer);
+        assertEq(seller.balance, sellerBefore + 9.5 ether);
+        assertEq(royaltyRecipient.balance, recipientBefore + 0.5 ether);
+        assertEq(address(market).balance, 0);
+    }
+
     function test_buyPrivateListingOnlyDesignatedBuyerCanSettle() public {
         _list(TOKEN_ID, PRICE, buyer);
 
@@ -47,7 +66,7 @@ contract LuciMarketIntegrationTest is LuciTestBase {
         // raising the mint price to the sale price after listing drops the royalty to zero at settlement
         uint192 newMintPriceUsd = uint192(_toUsd(PRICE));
         vm.prank(owner);
-        royaltyModel.configureCollection(address(nft), newMintPriceUsd);
+        royaltyModel.configureCollection(address(nft), newMintPriceUsd, MAX_ROYALTY_BPS);
 
         vm.prank(buyer);
         market.buy{value: PRICE}(address(nft), TOKEN_ID);
@@ -108,7 +127,7 @@ contract LuciMarketIntegrationTest is LuciTestBase {
 
     function test_buyAllowsSanctionedRoyaltyRecipientWhenRoyaltyIsZero() public {
         vm.prank(owner);
-        royaltyModel.configureCollection(address(nft), uint192(PRICE));
+        royaltyModel.configureCollection(address(nft), uint192(PRICE), MAX_ROYALTY_BPS);
         _list(TOKEN_ID, PRICE, address(0));
         _setSanctionsList();
         sanctions.setSanctioned(royaltyRecipient, true);
@@ -125,7 +144,7 @@ contract LuciMarketIntegrationTest is LuciTestBase {
         uint256 sellerBefore = seller.balance;
 
         vm.prank(owner);
-        royaltyModel.configureCollection(address(nft), uint192(PRICE));
+        royaltyModel.configureCollection(address(nft), uint192(PRICE), MAX_ROYALTY_BPS);
 
         vm.prank(seller);
         market.acceptBid(_tokenBid(TOKEN_ID), bidder, PRICE, _noProof());

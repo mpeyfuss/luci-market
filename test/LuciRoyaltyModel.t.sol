@@ -45,24 +45,37 @@ contract LuciRoyaltyModelTest is LuciTestBase {
         royaltyModel.setRoyaltyRecipient(address(0));
     }
 
-    function test_configureCollectionStoresMintPriceAndEmits() public {
+    function test_maxRoyaltyBpsMirrorMatchesModel() public view {
+        assertEq(MAX_ROYALTY_BPS, royaltyModel.MAX_ROYALTY_BPS());
+    }
+
+    function test_configureCollectionStoresMintPriceAndCapAndEmits() public {
         address collection = makeAddr("collection");
 
         vm.expectEmit(true, true, false, true, address(royaltyModel));
-        emit LuciRoyaltyModel.CollectionConfigured(collection, 2_000e8);
+        emit LuciRoyaltyModel.CollectionConfigured(collection, 2_000e8, 500);
 
         vm.prank(owner);
-        royaltyModel.configureCollection(collection, 2_000e8);
+        royaltyModel.configureCollection(collection, 2_000e8, 500);
 
-        (bool configured, uint192 mintPriceUsd) = royaltyModel.collections(collection);
+        (bool configured, uint16 maxRoyaltyBps, uint192 mintPriceUsd) = royaltyModel.collections(collection);
         assertTrue(configured);
+        assertEq(maxRoyaltyBps, 500);
         assertEq(mintPriceUsd, 2_000e8);
     }
 
     function test_onlyOwnerCanConfigureCollection() public {
         _expectOwnableUnauthorized(other);
         vm.prank(other);
-        royaltyModel.configureCollection(address(nft), 2_000e8);
+        royaltyModel.configureCollection(address(nft), 2_000e8, MAX_ROYALTY_BPS);
+    }
+
+    function testFuzz_configureCollectionRevertsForCapAboveMax(uint16 maxRoyaltyBps) public {
+        maxRoyaltyBps = uint16(bound(maxRoyaltyBps, MAX_ROYALTY_BPS + 1, type(uint16).max));
+
+        vm.expectRevert(LuciRoyaltyModel.InvalidRoyaltyBps.selector);
+        vm.prank(owner);
+        royaltyModel.configureCollection(address(nft), 2_000e8, maxRoyaltyBps);
     }
 
     function test_overrideTokenTakesPrecedenceAndEmits() public {
@@ -70,13 +83,14 @@ contract LuciRoyaltyModelTest is LuciTestBase {
         uint192 overrideUsd = 16_000e8;
 
         vm.expectEmit(true, true, true, true, address(royaltyModel));
-        emit LuciRoyaltyModel.TokenOverriden(address(nft), TOKEN_ID, overrideUsd);
+        emit LuciRoyaltyModel.TokenOverriden(address(nft), TOKEN_ID, overrideUsd, MAX_ROYALTY_BPS);
 
         vm.prank(owner);
-        royaltyModel.overrideToken(address(nft), TOKEN_ID, overrideUsd);
+        royaltyModel.overrideToken(address(nft), TOKEN_ID, overrideUsd, MAX_ROYALTY_BPS);
 
-        (bool enabled, uint192 mintPriceUsd) = royaltyModel.tokenOverrides(address(nft), TOKEN_ID);
+        (bool enabled, uint16 maxRoyaltyBps, uint192 mintPriceUsd) = royaltyModel.tokenOverrides(address(nft), TOKEN_ID);
         assertTrue(enabled);
+        assertEq(maxRoyaltyBps, MAX_ROYALTY_BPS);
         assertEq(mintPriceUsd, overrideUsd);
 
         // 12 ETH sale = $24,000 -> 50% profit over $16,000 -> 5% of 12 ETH
@@ -87,13 +101,21 @@ contract LuciRoyaltyModelTest is LuciTestBase {
     function test_onlyOwnerCanOverrideToken() public {
         _expectOwnableUnauthorized(other);
         vm.prank(other);
-        royaltyModel.overrideToken(address(nft), TOKEN_ID, 1_000e8);
+        royaltyModel.overrideToken(address(nft), TOKEN_ID, 1_000e8, MAX_ROYALTY_BPS);
+    }
+
+    function testFuzz_overrideTokenRevertsForCapAboveMax(uint16 maxRoyaltyBps) public {
+        maxRoyaltyBps = uint16(bound(maxRoyaltyBps, MAX_ROYALTY_BPS + 1, type(uint16).max));
+
+        vm.expectRevert(LuciRoyaltyModel.InvalidRoyaltyBps.selector);
+        vm.prank(owner);
+        royaltyModel.overrideToken(address(nft), TOKEN_ID, 1_000e8, maxRoyaltyBps);
     }
 
     function test_clearTokenOverrideRestoresCollectionMintAndEmits() public {
         uint192 overrideUsd = 16_000e8;
         vm.prank(owner);
-        royaltyModel.overrideToken(address(nft), TOKEN_ID, overrideUsd);
+        royaltyModel.overrideToken(address(nft), TOKEN_ID, overrideUsd, 500);
 
         vm.expectEmit(true, true, false, true, address(royaltyModel));
         emit LuciRoyaltyModel.TokenOverrideCleared(address(nft), TOKEN_ID);
@@ -101,8 +123,9 @@ contract LuciRoyaltyModelTest is LuciTestBase {
         vm.prank(owner);
         royaltyModel.clearTokenOverride(address(nft), TOKEN_ID);
 
-        (bool enabled, uint192 mintPriceUsd) = royaltyModel.tokenOverrides(address(nft), TOKEN_ID);
+        (bool enabled, uint16 maxRoyaltyBps, uint192 mintPriceUsd) = royaltyModel.tokenOverrides(address(nft), TOKEN_ID);
         assertFalse(enabled);
+        assertEq(maxRoyaltyBps, 0);
         assertEq(mintPriceUsd, 0);
 
         // 12 ETH = $24,000 vs the collection $10,000 mint -> >= 2x -> 10%
@@ -185,6 +208,104 @@ contract LuciRoyaltyModelTest is LuciTestBase {
     }
 
     /////////////////////////////////////////////////////////////////////
+    // ROYALTY CAP
+    /////////////////////////////////////////////////////////////////////
+
+    function test_cappedCollectionSlidesUpToItsCap() public {
+        vm.prank(owner);
+        royaltyModel.configureCollection(address(nft), MINT_PRICE_USD, 500); // 5% cap
+
+        (, uint256 atMint) = royaltyModel.calculateRoyalty(address(nft), TOKEN_ID, MINT_PRICE, NATIVE);
+        (, uint256 halfway) = royaltyModel.calculateRoyalty(address(nft), TOKEN_ID, 7.5 ether, NATIVE);
+        (, uint256 atDoubleMint) = royaltyModel.calculateRoyalty(address(nft), TOKEN_ID, MINT_PRICE * 2, NATIVE);
+        (, uint256 aboveDoubleMint) = royaltyModel.calculateRoyalty(address(nft), TOKEN_ID, MINT_PRICE * 3, NATIVE);
+
+        assertEq(atMint, 0);
+        assertEq(halfway, 0.1875 ether); // 50% profit -> half of the 5% cap -> 2.5% of 7.5 ETH
+        assertEq(atDoubleMint, 0.5 ether); // 5% of 10 ETH
+        assertEq(aboveDoubleMint, 0.75 ether); // 5% of 15 ETH
+    }
+
+    function test_cappedCollectionWithZeroMintPricePaysCap() public {
+        vm.prank(owner);
+        royaltyModel.configureCollection(address(nft), 0, 500);
+
+        (, uint256 royalty) = royaltyModel.calculateRoyalty(address(nft), TOKEN_ID, 1 ether, NATIVE);
+        assertEq(royalty, 0.05 ether);
+    }
+
+    function test_cappedCollectionFallsBackToCapWhenConversionFails() public {
+        vm.prank(owner);
+        royaltyModel.configureCollection(address(nft), MINT_PRICE_USD, 500);
+
+        vm.warp(block.timestamp + FEED_MAX_AGE + 1);
+        (, uint256 staleRoyalty) = royaltyModel.calculateRoyalty(address(nft), TOKEN_ID, MINT_PRICE, NATIVE);
+        assertEq(staleRoyalty, Math.mulDiv(MINT_PRICE, 500, 10_000));
+
+        (, uint256 unknownRoyalty) =
+            royaltyModel.calculateRoyalty(address(nft), TOKEN_ID, MINT_PRICE, makeAddr("unknown"));
+        assertEq(unknownRoyalty, Math.mulDiv(MINT_PRICE, 500, 10_000));
+    }
+
+    function test_zeroCapIsRoyaltyFreeWithoutConsultingFeed() public {
+        vm.prank(owner);
+        royaltyModel.configureCollection(address(nft), MINT_PRICE_USD, 0);
+
+        // a reverting feed would otherwise fall back to the cap; a zero cap never reaches the feed
+        ethUsdFeed.setShouldRevert(true);
+        (, uint256 royalty) = royaltyModel.calculateRoyalty(address(nft), TOKEN_ID, MINT_PRICE * 3, NATIVE);
+        assertEq(royalty, 0);
+
+        (, uint256 unknownRoyalty) =
+            royaltyModel.calculateRoyalty(address(nft), TOKEN_ID, MINT_PRICE * 3, makeAddr("unknown"));
+        assertEq(unknownRoyalty, 0);
+    }
+
+    function test_tokenOverrideCapTakesPrecedenceOverCollectionCap() public {
+        // lower override cap on a full-cap collection
+        vm.prank(owner);
+        royaltyModel.overrideToken(address(nft), TOKEN_ID, MINT_PRICE_USD, 250);
+        (, uint256 lowered) = royaltyModel.calculateRoyalty(address(nft), TOKEN_ID, MINT_PRICE * 2, NATIVE);
+        assertEq(lowered, 0.25 ether); // 2.5% of 10 ETH
+
+        // higher override cap on a lower-cap collection
+        vm.startPrank(owner);
+        royaltyModel.configureCollection(address(nft), MINT_PRICE_USD, 250);
+        royaltyModel.overrideToken(address(nft), TOKEN_ID, MINT_PRICE_USD, MAX_ROYALTY_BPS);
+        vm.stopPrank();
+        (, uint256 raised) = royaltyModel.calculateRoyalty(address(nft), TOKEN_ID, MINT_PRICE * 2, NATIVE);
+        assertEq(raised, 1 ether); // 10% of 10 ETH
+
+        // other tokens keep the collection cap
+        (, uint256 otherToken) = royaltyModel.calculateRoyalty(address(nft), TOKEN_ID_TWO, MINT_PRICE * 2, NATIVE);
+        assertEq(otherToken, 0.25 ether);
+    }
+
+    function test_tokenOverrideCapAppliesToUnconfiguredCollection() public {
+        address shared = makeAddr("shared");
+        vm.prank(owner);
+        royaltyModel.overrideToken(shared, TOKEN_ID, MINT_PRICE_USD, 500);
+
+        (, uint256 overridden) = royaltyModel.calculateRoyalty(shared, TOKEN_ID, MINT_PRICE * 2, NATIVE);
+        assertEq(overridden, 0.5 ether); // 5% of 10 ETH
+
+        // other tokens in the unconfigured contract pay the max royalty
+        (, uint256 otherToken) = royaltyModel.calculateRoyalty(shared, TOKEN_ID_TWO, MINT_PRICE * 2, NATIVE);
+        assertEq(otherToken, 1 ether);
+    }
+
+    function test_clearTokenOverrideRestoresCollectionCap() public {
+        vm.startPrank(owner);
+        royaltyModel.configureCollection(address(nft), MINT_PRICE_USD, 500);
+        royaltyModel.overrideToken(address(nft), TOKEN_ID, MINT_PRICE_USD, 0);
+        royaltyModel.clearTokenOverride(address(nft), TOKEN_ID);
+        vm.stopPrank();
+
+        (, uint256 royalty) = royaltyModel.calculateRoyalty(address(nft), TOKEN_ID, MINT_PRICE * 2, NATIVE);
+        assertEq(royalty, 0.5 ether);
+    }
+
+    /////////////////////////////////////////////////////////////////////
     // CURRENCY REGISTRY
     /////////////////////////////////////////////////////////////////////
 
@@ -257,7 +378,7 @@ contract LuciRoyaltyModelTest is LuciTestBase {
 
         address collection = makeAddr("decimalsCollection");
         vm.prank(owner);
-        royaltyModel.configureCollection(collection, 100e8); // $100 mint
+        royaltyModel.configureCollection(collection, 100e8, MAX_ROYALTY_BPS); // $100 mint
 
         // 200 units = $200 = 2x mint -> full 10%
         (, uint256 royalty) = royaltyModel.calculateRoyalty(collection, TOKEN_ID, 200e6, currency);
@@ -364,8 +485,14 @@ contract LuciRoyaltyModelTest is LuciTestBase {
     // FUZZ
     /////////////////////////////////////////////////////////////////////
 
-    function testFuzz_calculateRoyaltyInvariants(uint192 mintPriceUsd, uint256 salePrice, int256 ethUsdPrice) public {
+    function testFuzz_calculateRoyaltyInvariants(
+        uint192 mintPriceUsd,
+        uint16 maxRoyaltyBps,
+        uint256 salePrice,
+        int256 ethUsdPrice
+    ) public {
         mintPriceUsd = uint192(bound(mintPriceUsd, 1, uint192(type(uint96).max)));
+        maxRoyaltyBps = uint16(bound(maxRoyaltyBps, 0, MAX_ROYALTY_BPS));
         salePrice = bound(salePrice, 0, 1_000_000 ether);
         ethUsdPrice = int256(bound(ethUsdPrice, 1e8, 1_000_000e8));
 
@@ -373,18 +500,39 @@ contract LuciRoyaltyModelTest is LuciTestBase {
 
         address collection = makeAddr("fuzzCollection");
         vm.prank(owner);
-        royaltyModel.configureCollection(collection, mintPriceUsd);
+        royaltyModel.configureCollection(collection, mintPriceUsd, maxRoyaltyBps);
 
         uint256 saleUsd = _toUsd(salePrice);
         (, uint256 royalty) = royaltyModel.calculateRoyalty(collection, TOKEN_ID, salePrice, NATIVE);
 
-        assertLe(royalty, Math.mulDiv(salePrice, 1_000, 10_000)); // always less than or equal to 10% of sale price
+        assertLe(royalty, Math.mulDiv(salePrice, maxRoyaltyBps, 10_000)); // never above the cap
         if (saleUsd <= mintPriceUsd) {
             assertEq(royalty, 0);
         } else if (saleUsd >= uint256(mintPriceUsd) * 2) {
-            assertEq(royalty, Math.mulDiv(salePrice, 1_000, 10_000));
+            assertEq(royalty, Math.mulDiv(salePrice, maxRoyaltyBps, 10_000));
         } else {
-            assertEq(royalty, Math.mulDiv(salePrice, (saleUsd - mintPriceUsd) * 1_000, uint256(mintPriceUsd) * 10_000));
+            assertEq(
+                royalty,
+                Math.mulDiv(salePrice, (saleUsd - mintPriceUsd) * maxRoyaltyBps, uint256(mintPriceUsd) * 10_000)
+            );
         }
+    }
+
+    function testFuzz_cappedRoyaltyIsNonDecreasingInSalePrice(
+        uint16 maxRoyaltyBps,
+        uint256 lowerSalePrice,
+        uint256 higherSalePrice
+    ) public {
+        maxRoyaltyBps = uint16(bound(maxRoyaltyBps, 0, MAX_ROYALTY_BPS));
+        lowerSalePrice = bound(lowerSalePrice, 0, 1_000_000 ether);
+        higherSalePrice = bound(higherSalePrice, lowerSalePrice, 1_000_000 ether);
+
+        vm.prank(owner);
+        royaltyModel.configureCollection(address(nft), MINT_PRICE_USD, maxRoyaltyBps);
+
+        (, uint256 lowerRoyalty) = royaltyModel.calculateRoyalty(address(nft), TOKEN_ID, lowerSalePrice, NATIVE);
+        (, uint256 higherRoyalty) = royaltyModel.calculateRoyalty(address(nft), TOKEN_ID, higherSalePrice, NATIVE);
+
+        assertLe(lowerRoyalty, higherRoyalty);
     }
 }

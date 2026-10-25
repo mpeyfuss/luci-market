@@ -11,7 +11,7 @@ A bespoke ETH marketplace for trading ERC-721 tokens from Sam Spratt collections
 - `ISanctionsList` in `src/interfaces/ISanctionsList.sol` is the Chainalysis-compatible sanctions interface used by the marketplace.
 - `IAggregatorV3` in `src/interfaces/IAggregatorV3.sol` is the minimal Chainlink aggregator interface used by the royalty model to read `<currency>/USD` price feeds.
 
-Both main contracts use `Ownable2Step`. The marketplace owner and royalty model owner may be the same address, but they are separate ownership domains.
+Both main contracts use `Ownable2Step`. The marketplace owner and royalty model owner may be the same address, but they are separate ownership domains. For production, the intended owner of each contract is a timelock controller governed by a multisig; see [Access Control](#access-control).
 
 ## Deployment
 
@@ -35,7 +35,8 @@ Chain-specific setup is separate from deployment. From the owner, with `cast cal
 
 1. `configureCurrency(address,address,uint8,uint8,uint32)` on `LuciRoyaltyModel` for native ETH (`address(0)`, 18 currency decimals, the ETH/USD feed, its decimals, and `maxAge`).
 2. `addCollection(address)` on `LuciMarket`.
-3. `configureCollection(address,uint192)` on `LuciRoyaltyModel` with the mint price in USD, 8 decimals.
+3. `configureCollection(address,uint192,uint16)` on `LuciRoyaltyModel` with the mint price in USD, 8 decimals, and the collection's royalty cap in basis points (`1000` for the full 10%).
+4. `setSelectionBaseUri(string)` on `LuciMarket` with the base URI that selection trees are published under, including the trailing `/`.
 
 ## Listings
 
@@ -151,7 +152,7 @@ Removing a collection, or removing an individually allowed token from a collecti
 
 ## Royalty Model
 
-Royalties are calculated by `LuciRoyaltyModel` from a configured mint price. **Mint prices are denominated in USD with 8 decimals.** The marketplace calls:
+Royalties are calculated by `LuciRoyaltyModel` from a configured mint price and royalty cap. **Mint prices are denominated in USD with 8 decimals.** The cap is in basis points, at most `MAX_ROYALTY_BPS` (10%), and sets the top of the sliding scale for that collection or token. The marketplace calls:
 
 ```solidity
 calculateRoyalty(collection, tokenId, salePrice, currency)
@@ -167,22 +168,22 @@ The marketplace enforces its own hard ceiling on every settlement:
 if (royaltyAmount > Math.mulDiv(salePrice, MAX_ROYALTY_BPS, BASIS)) revert InvalidRoyaltyAmount();
 ```
 
-`LuciMarket.MAX_ROYALTY_BPS` is `1_000` (10%). This bound holds regardless of which royalty model the owner has configured, so collectors have an on-chain assurance that survives a `setRoyaltyModel` swap. Settlement also rejects a zero royalty recipient when the royalty amount is positive, so a swapped model cannot burn the cut.
+`LuciMarket.MAX_ROYALTY_BPS` is `1_000` (10%). This bound holds regardless of which royalty model the owner has configured, so every successful settlement gives the seller at least 90% of the gross sale price. This is the durable seller protection even though long-lived orders use a live royalty quote. Settlement also rejects a zero royalty recipient when the royalty amount is positive, so a swapped model cannot burn the cut.
 
 ### Configuration
 
 The royalty model owner can:
 
 - Set the royalty recipient.
-- Configure a collection mint price, in USD with 8 decimals.
-- Override the mint price for a specific token, in USD with 8 decimals.
-- Clear a token mint-price override so the collection mint applies again (`clearTokenOverride`).
+- Configure a collection mint price, in USD with 8 decimals, and royalty cap, in basis points (`configureCollection`).
+- Override the mint price and royalty cap for a specific token (`overrideToken`).
+- Clear a token override so the collection mint price and cap apply again (`clearTokenOverride`).
 - Register a sale currency with its `<currency>/USD` price feed, currency decimals, and staleness window (`configureCurrency`).
 - Remove a sale currency (`removeCurrency`).
 
-Token overrides take precedence over collection configuration when the token override is enabled. Clearing an override returns that token to the collection mint. A zero address royalty recipient is rejected in the royalty model constructor and setter, and by the marketplace at settlement when the royalty amount is positive. `configureCurrency` rejects a zero oracle, a zero `maxAge`, and currency or feed decimals above 18. The feed's decimals are owner-declared at configuration time rather than probed. Conversion re-reads `decimals()` live and falls back to the maximum royalty if they differ from the stored value, so a wrong declaration or a scale change without a matching `answer` rescaling cannot under-charge.
+Token overrides take precedence over collection configuration when the token override is enabled, including the cap, so a token in an unconfigured shared contract can carry its own cap. Clearing an override returns that token to the collection mint price and cap. Both setters reject a cap above `MAX_ROYALTY_BPS` with `InvalidRoyaltyBps`. A cap of `0` makes the collection or token royalty free and skips the price feed entirely. A zero address royalty recipient is rejected in the royalty model constructor and setter, and by the marketplace at settlement when the royalty amount is positive. `configureCurrency` rejects a zero oracle, a zero `maxAge`, and currency or feed decimals above 18. The feed's decimals are owner-declared at configuration time rather than probed. Conversion re-reads `decimals()` live and falls back to the royalty cap if they differ from the stored value, so a wrong declaration or a scale change without a matching `answer` rescaling cannot under-charge.
 
-A freshly deployed royalty model has no currencies registered, so every sale falls back to the maximum royalty until `configureCurrency` is called for the native currency (`address(0)`, 18 decimals) with the ETH/USD feed. Registering currencies and configuring collection mint prices are both required deployment steps.
+A freshly deployed royalty model has no currencies registered, so every sale falls back to its royalty cap until `configureCurrency` is called for the native currency (`address(0)`, 18 decimals) with the ETH/USD feed. Registering currencies and configuring collection mint prices are both required deployment steps.
 
 ### Price Conversion
 
@@ -190,17 +191,17 @@ A freshly deployed royalty model has no currencies registered, so every sale fal
 usd = Math.mulDiv(amount, answer * 10 ** USD_DECIMALS, 10 ** currencyDecimals * 10 ** oracleDecimals);
 ```
 
-Conversion fails — and the model falls back to the **maximum royalty** — when the currency is not registered, the feed reverts, `answer <= 0`, `updatedAt` is zero or in the future, the answer is older than the currency's configured `maxAge`, `answer * 10 ** USD_DECIMALS` would overflow, the converted USD value would overflow, or live `decimals()` differs from the value stored at `configureCurrency`. A revert from live `decimals()` after a successful round is not caught and reverts settlement, so an oracle that does not fully follow the aggregator interface carries a slight chance of blocking trading until the currency is reconfigured. Falling back rather than reverting keeps trading available during a feed outage while never under-charging royalties. Freshness is `updatedAt` versus `maxAge`; Chainlink's `answeredInRound` is deprecated and is not checked.
+Conversion fails — and the model falls back to the **royalty cap** for that collection or token — when the currency is not registered, either feed call reverts, `answer <= 0`, `updatedAt` is zero or in the future, the answer is older than the currency's configured `maxAge`, `answer * 10 ** USD_DECIMALS` would overflow, the converted USD value would overflow, or live `decimals()` differs from the value stored at `configureCurrency`. The `latestRoundData()` and `decimals()` calls have separate `try/catch` guards. Malformed return data that cannot be ABI-decoded may still revert settlement until the currency is reconfigured or removed. Falling back rather than reverting keeps trading available during ordinary feed failures while never under-charging royalties. Freshness is `updatedAt` versus `maxAge`; Chainlink's `answeredInRound` is deprecated and is not checked.
 
 `MAX_CURRENCY_DECIMALS` is `18`, matching real currencies and Chainlink feeds (8 or 18). The bound is enforced at configuration time for the currency and the feed. An `answer` large enough that `answer * 10 ** USD_DECIMALS` would overflow, or a converted USD value large enough to overflow `uint256`, is treated as a failed conversion rather than reverting settlement. Neither overflow is reachable on a realistic ETH/USD tick.
 
 ### Choosing `maxAge`
 
-`maxAge` is per currency and should be set from the specific feed's heartbeat, which varies by feed and by chain. Chainlink feeds publish on a heartbeat **or** a deviation threshold, whichever comes first, so an answer can only be old if the price has stayed inside the deviation band for that entire window. The error absorbed from an old answer is therefore bounded by the deviation threshold rather than by how far the market moved.
+`maxAge` is per currency and should be set from the specific feed's heartbeat, which varies by feed and by chain. A healthy Chainlink feed publishes on a heartbeat **or** a deviation threshold, whichever comes first. The deviation threshold bounds movement between normal updates; it does not bound price error after reporting has degraded or stopped.
 
-The fallback is the maximum royalty, so the failure modes are asymmetric. A `maxAge` set too tight does not block trading, but it silently charges a full 10% during a normal quiet stretch between updates. A `maxAge` set loosely only admits an answer whose error is bounded by the deviation threshold. False positives are the more expensive mistake, which argues for a generous window.
+The fallback is the royalty cap, so the failure modes are asymmetric. A `maxAge` set too tight does not block trading, but it can silently charge the full cap because of ordinary publication delay. A looser value tolerates a longer feed interruption, but it also permits a genuinely stale price to determine a royalty anywhere on the curve until the window expires. Once it expires, the cap fallback applies.
 
-For Ethereum mainnet ETH/USD (1 hour heartbeat, 0.5% deviation), **4 hours** is the intended deployment value: long enough that tripping it means the feed is genuinely broken, while the staleness it admits shifts the royalty by a few basis points at most. `maxAge` is a `uint32` and owner-settable through `configureCurrency`, so it can be retuned without a redeploy. Test fixtures use a shorter window so that tests can warp past it.
+For Ethereum mainnet ETH/USD (1 hour heartbeat, 0.5% deviation), **4 hours** is the intended deployment value. This is an explicit availability choice: it avoids treating a delayed update as a feed failure, at the cost of accepting a price up to four hours old during an outage. The feed parameters should be re-verified against Chainlink's current documentation before deployment. `maxAge` is a `uint32` and owner-settable through `configureCurrency`, so it can be retuned without a redeploy. Test fixtures use a shorter window so that tests can warp past it.
 
 ### Formula
 
@@ -211,31 +212,37 @@ BASIS = 10_000
 MAX_ROYALTY_BPS = 1_000 // 10%
 ```
 
-The effective mint price is:
+The effective mint price and cap (`maxRoyaltyBps`) are:
 
-1. `tokenOverrides[collection][tokenId].mintPriceUsd` when the token override is enabled.
-2. Otherwise `collections[collection].mintPriceUsd`.
-3. Otherwise `0`.
+1. `tokenOverrides[collection][tokenId]` when the token override is enabled.
+2. Otherwise `collections[collection]` when the collection is configured.
+3. Otherwise no configuration: the royalty is `MAX_ROYALTY_BPS` of the sale price, with no feed lookup.
 
 Let `saleUsd` be the sale price converted to USD. Royalty behavior:
 
 | Scenario | Royalty |
 | --- | --- |
+| `maxRoyaltyBps == 0` | 0 |
 | `saleUsd <= mintPriceUsd` | 0 |
-| `saleUsd >= mintPriceUsd * 2` | 10% of sale price |
-| `mintPriceUsd < saleUsd < mintPriceUsd * 2` | Sliding scale from 0% to 10% |
-| Unconfigured collection/token and positive sale price | 10% of sale price |
-| Unregistered currency, or stale/invalid/reverting feed | 10% of sale price |
+| `saleUsd >= mintPriceUsd * 2` | Cap of sale price |
+| `mintPriceUsd < saleUsd < mintPriceUsd * 2` | Sliding scale from 0% to the cap |
+| Configured with `mintPriceUsd == 0` | Cap of sale price |
+| Unregistered currency, or stale/invalid/reverting feed | Cap of sale price |
+| No collection configuration and no token override | 10% of sale price |
+
+For example, a 5% cap on a $1,000 mint charges 2.5% on a $1,500 sale and 5% from $2,000 up.
+
+Appreciation above the mint price sets the **percentage**, but the resulting percentage is always applied to the **gross sale price**. The model does not charge a percentage of profit. For example, a 10% cap on a $1,000 mint produces a 5% royalty on a $1,500 gross sale ($75), not 10% of the $500 appreciation ($50).
 
 For the sliding-scale range:
 
 ```solidity
-royalty = Math.mulDiv(salePrice, (saleUsd - mintPriceUsd) * MAX_ROYALTY_BPS, mintPriceUsd * BASIS);
+royalty = Math.mulDiv(salePrice, (saleUsd - mintPriceUsd) * maxRoyaltyBps, mintPriceUsd * BASIS);
 ```
 
-The percentage is derived in USD and then applied to the sale price in its own currency. Units cancel (ETH × USD / USD), so this is a single `mulDiv` rather than truncating to integer basis points first. The result still rounds down, so the royalty never exceeds 10% of the sale price.
+The percentage is derived in USD and then applied to the sale price in its own currency. Units cancel (ETH × USD / USD), so this is a single `mulDiv` rather than truncating to integer basis points first. The result still rounds down, so the royalty never exceeds the cap, and the cap never exceeds 10%.
 
-Unconfigured collections intentionally default to `mintPriceUsd == 0`, which charges full royalties for any positive sale price. A configured collection or enabled token override with a zero mint price has the same positive-sale behavior. The marketplace owner controls which collections and tokens can trade, so royalty readiness is an operational allowlist decision.
+Collections with no configuration and no token override intentionally charge the full 10% for any positive sale price. A configured collection or enabled token override with a zero mint price charges its cap. The marketplace owner controls which collections and tokens can trade, so royalty readiness is an operational allowlist decision.
 
 ## Selection Bids
 
@@ -265,6 +272,8 @@ Many bidders can bid on the same root. Filling or canceling a bid deletes only t
 ### Data Availability
 
 The contract never sees a selection's contents. If the tree behind a root is lost, nobody can produce proofs and the bid cannot be filled. The escrowed ETH is never at risk: the bidder can cancel at any time. The site must store every tree it builds, keyed by root, and serve proofs to sellers.
+
+To tell integrators where trees live, the owner sets `selectionBaseUri` with `setSelectionBaseUri`, and `selectionUri(selectionRoot)` returns the base URI followed by the root as `0x`-prefixed lowercase hex (66 characters), for example `https://cdn.samspratt.com/merkle/0x5d3c…e1a0`. The site must publish each tree at exactly that path. The base URI should include its trailing separator, and an unset base URI makes `selectionUri` return an empty string. The helper is informational: settlement never reads it, and it does not check that a tree exists. A fetched tree is self-verifying because its root must match the one the bid was placed on, so integrators should recompute the root before trusting a tree's contents or proofs.
 
 Bidders sign a bare root, so they rely on the site to build the tree they intended. The site should show the selection's contents, and the criteria that produced them, before the bidder signs.
 
@@ -328,6 +337,7 @@ The marketplace owner manages:
 - Pause state.
 - Royalty model address.
 - Sanctions list address.
+- Selection base URI, which only tells integrators where selection trees are published.
 
 The royalty model owner manages:
 
@@ -336,6 +346,8 @@ The royalty model owner manages:
 - Token mint price overrides (USD), including clearing an override.
 - Sale currency registry and the price feeds backing it.
 
+These owner-only calls execute immediately at the contract level. The intended production setup is to transfer each `Ownable2Step` ownership domain to a timelock controller whose administrative actions are authorized by a multisig. The deployment process must configure and test the timelock roles, complete the two-step ownership transfers, and remove any bootstrap EOA authority. This operational layer delays and distributes owner actions; it is not enforced by the contract constructors themselves.
+
 The owner does not manage selections. The marketplace never sees trait data or a selection's contents; the mapping from traits to tokens, and storage of the trees, is the site's responsibility. The allowlist bounds which tokens can fill a selection bid.
 
 ## Known Limitations
@@ -343,7 +355,7 @@ The owner does not manage selections. The marketplace never sees trait data or a
 - **Non-escrowed listings**: listed NFTs remain in seller wallets.
 - **Stale listings**: listings are not automatically invalidated when NFTs transfer outside the marketplace.
 - **ETH only**: ERC-20 payments are not supported by the marketplace. The royalty model is currency-aware ahead of this and can already price non-native currencies with their own decimals and feeds.
-- **Oracle dependence**: USD-denominated royalties require a live `<currency>/USD` feed. A feed outage degrades to the maximum royalty rather than blocking trades.
+- **Oracle dependence**: USD-denominated royalties require a live `<currency>/USD` feed. A feed outage degrades to the royalty cap rather than blocking trades.
 - **No partial fills**: each accepted bid is consumed in full.
 - **One stored bid per key**: bidders can hold one collection bid per collection, one token bid per token, and one selection bid per selection. Expired bids still occupy storage until canceled or extended.
 - **Offchain selection data**: a selection bid can only be filled with a proof built from the tree behind its root. If the tree is lost, the bid cannot be filled until the bidder cancels it.
@@ -353,7 +365,7 @@ The owner does not manage selections. The marketplace never sees trait data or a
 ## Known Tradeoffs
 
 - **Full royalty fallback**: unconfigured royalty entries default to full royalties for positive sale prices instead of reverting. The same fallback applies when the sale price cannot be converted to USD (unregistered currency, or a stale, non-positive, or reverting feed answer), trading availability being preferred over an exact percentage.
-- **Live royalty resolution**: listings do not lock in a royalty amount. Seller proceeds on an open listing move with the ETH/USD rate, which is the cost of keeping the mint price pinned in USD.
+- **Live royalty resolution**: listings do not lock in a royalty amount or an order-specific proceeds floor. Seller proceeds on an open listing move with the ETH/USD rate, which is the cost of keeping the mint price pinned in USD. An exact bound would become stale over the intended order horizons, so the marketplace instead provides the durable guarantee that royalties cannot exceed 10% of gross sale price.
 - **User-managed stale orders**: users, frontends, and indexers are expected to manage stale listings and stale bids. Fulfillment paths re-check ownership, approval, allowlist status, selection membership, expiration, sanctions status, and payment amount.
 - **Re-approved orders can reactivate**: removing a collection or token blocks fulfillment while removed, but existing unexpired orders can become executable again if allowlisted later.
 - **Selection allowlist checks at fill only**: placing, increasing, and extending a selection bid do not check the allowlist, because the contract does not know the selection's contents. A selection can include tokens that are not eligible; those tokens cannot fill until allowed.
@@ -368,10 +380,10 @@ The owner does not manage selections. The marketplace never sees trait data or a
 - **Contract buyers**: NFT transfers use `transferFrom`, so settlement does not call `onERC721Received`. Contract buyers are responsible for ensuring they can manage received NFTs.
 - **ETH payouts**: failed ETH sends revert settlement or cancellation. Contract sellers, bidders, or royalty recipients should be able to receive ETH within the gas cap.
 - **Sanctioned escrow**: sanctioned bidders cannot withdraw bid escrow until no longer sanctioned.
-- **Owner trust**: owners can pause trading, change allowlists, change the royalty model, change sanctions enforcement, and configure royalties, currencies, and price feeds.
+- **Owner trust**: owners can pause trading, change allowlists, change the royalty model, change sanctions enforcement, and configure royalties, currencies, and price feeds. These powers are immediate in source; production ownership is intended to sit behind a timelock controller governed by a multisig.
 - **Selection proofs**: membership is verified with OpenZeppelin's `MerkleProof` against double-hashed leaves, so internal nodes cannot be passed off as leaves. The contract cannot tell what a root contains; bidders trust the site to build the tree they intended, and an unrecoverable tree only makes a bid unfillable, never unrefundable.
 - **Marketplace royalty ceiling**: `LuciMarket` rejects any settlement where the royalty exceeds `MAX_ROYALTY_BPS` (10%) of the sale price, or where a positive royalty would be paid to the zero address. Both checks run in `_settleSale`, covering `buy` and `acceptBid`, and apply to any royalty model the owner configures.
-- **Oracle trust**: the royalty model calls an owner-configured price feed during settlement. A degraded feed, or a live `decimals()` change relative to configure time, falls back to the maximum royalty rather than reverting, and the royalty model owner can point a currency at any contract. The marketplace royalty ceiling bounds the impact.
+- **Oracle trust**: the royalty model calls an owner-configured price feed during settlement. A degraded feed, or a live `decimals()` change relative to configure time, falls back to the royalty cap rather than reverting, and the royalty model owner can point a currency at any contract. The marketplace royalty ceiling bounds the impact.
 
 ### Audit
 
@@ -385,7 +397,7 @@ The indexing layer should enrich on-chain events into a queryable model. Key res
 - Hide listings where the stored seller no longer owns the token.
 - Optionally mark stale listings as active again if the original seller reacquires the token before expiry.
 - Aggregate token, collection, and selection bids for token and collection pages.
-- Store every Merkle tree the site builds, keyed by root, and serve proofs to sellers. A `BidPlaced` event with an unknown root is a selection the site cannot fill.
+- Store every Merkle tree the site builds, keyed by root, publish it at `selectionUri(root)`, and serve proofs to sellers. A `BidPlaced` event with an unknown root is a selection the site cannot fill.
 - Index each tree's members, so a token page can list every selection bid that token can fill, and notify holders when one is placed.
 - Record which criteria produced each selection root for display.
 - Track sanctions and allowlist changes that affect order executability.

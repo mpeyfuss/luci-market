@@ -142,7 +142,7 @@ contract LuciMarketTest is LuciTestBase {
         // mint price raised to the sale price after listing -> royalty must be zero at settlement
         uint192 newMintPriceUsd = uint192(_toUsd(PRICE));
         vm.prank(owner);
-        royaltyModel.configureCollection(address(nft), newMintPriceUsd);
+        royaltyModel.configureCollection(address(nft), newMintPriceUsd, MAX_ROYALTY_BPS);
 
         uint256 sellerBalanceBefore = seller.balance;
         uint256 recipientBalanceBefore = royaltyRecipient.balance;

@@ -10,11 +10,15 @@ import {IAggregatorV3} from "./interfaces/IAggregatorV3.sol";
 /// @dev Mint prices are denominated in USD with `USD_DECIMALS` decimals. The royalty percentage is derived by
 ///      converting the sale price into USD via a registered price feed, and that percentage is then applied to the
 ///      sale price in its original currency.
-/// @dev Royalty percentage is based on profit above mint price.
+/// @dev Appreciation above mint price determines the royalty percentage, up to a cap configured per collection or
+///      token. That percentage is applied to the gross sale price; the royalty is not a percentage of profit.
 ///          - Sale <= mint price -> 0%
-///          - Sale >= 2x mint price -> 10%
-///          - Sliding scale otherwise between 0% and 10% fees
-/// @dev If the sale price cannot be converted to USD, the model falls back to `MAX_ROYALTY_BPS`.
+///          - Sale >= 2x mint price -> cap
+///          - Sliding scale otherwise between 0% and the cap
+/// @dev The cap is set alongside the mint price and can never exceed `MAX_ROYALTY_BPS`. A token override carries its
+///      own cap, which takes precedence over the collection's.
+/// @dev If the mint price is zero or the sale price cannot be converted to USD, the model falls back to the cap.
+///      A collection with no configuration and no token override pays `MAX_ROYALTY_BPS`.
 /// @dev This collection does not gate which collections can or can't be traded. That is up to the marketplace contract(s).
 /// @author mpeyfuss
 /// @author Sam Spratt
@@ -25,11 +29,13 @@ contract LuciRoyaltyModel is Ownable2Step {
 
     struct CollectionConfig {
         bool configured;
+        uint16 maxRoyaltyBps; // cap on the sliding scale, at most `MAX_ROYALTY_BPS`
         uint192 mintPriceUsd; // `USD_DECIMALS` decimals
     }
 
     struct TokenOverride {
         bool enabled;
+        uint16 maxRoyaltyBps; // cap on the sliding scale, at most `MAX_ROYALTY_BPS`
         uint192 mintPriceUsd; // `USD_DECIMALS` decimals
     }
 
@@ -63,9 +69,11 @@ contract LuciRoyaltyModel is Ownable2Step {
     // EVENTS
     /////////////////////////////////////////////////////////////////////
 
-    event CollectionConfigured(address indexed collection, uint192 indexed mintPriceUsd);
+    event CollectionConfigured(address indexed collection, uint192 indexed mintPriceUsd, uint16 maxRoyaltyBps);
     event RoyaltyRecipientUpdated(address indexed oldRoyaltyRecipient, address indexed newRoyaltyRecipient);
-    event TokenOverriden(address indexed collection, uint256 indexed tokenId, uint192 indexed mintPriceUsd);
+    event TokenOverriden(
+        address indexed collection, uint256 indexed tokenId, uint192 indexed mintPriceUsd, uint16 maxRoyaltyBps
+    );
     event TokenOverrideCleared(address indexed collection, uint256 indexed tokenId);
     event CurrencyConfigured(
         address indexed currency, address indexed oracle, uint8 currencyDecimals, uint8 oracleDecimals, uint32 maxAge
@@ -79,6 +87,7 @@ contract LuciRoyaltyModel is Ownable2Step {
     error ZeroAddress();
     error InvalidMaxAge();
     error InvalidCurrencyDecimals();
+    error InvalidRoyaltyBps();
 
     /////////////////////////////////////////////////////////////////////
     // CONSTRUCTOR
@@ -92,7 +101,7 @@ contract LuciRoyaltyModel is Ownable2Step {
     // ROYALTY FUNCTIONS
     /////////////////////////////////////////////////////////////////////
 
-    /// @notice Function to calculate royalty according to the model where royalty percent is based on the profit over the original mint price.
+    /// @notice Calculates a gross-sale royalty whose percentage is determined by appreciation over the mint price.
     /// @dev The royalty percentage is determined in USD terms, then applied to `salePrice` in its own currency.
     /// @param collection The collection being sold
     /// @param tokenId The token being sold
@@ -106,25 +115,37 @@ contract LuciRoyaltyModel is Ownable2Step {
         // set recipient
         recipient = royaltyRecipient;
 
-        // determine mint price
+        // determine mint price and royalty cap
         uint256 mintPriceUsd;
+        uint256 maxRoyaltyBps;
         TokenOverride memory tokenOverride = tokenOverrides[collection][tokenId];
         if (tokenOverride.enabled) {
             mintPriceUsd = tokenOverride.mintPriceUsd;
+            maxRoyaltyBps = tokenOverride.maxRoyaltyBps;
         } else {
             CollectionConfig memory collectionConfig = collections[collection];
+            // an unconfigured collection has no cap of its own and pays the max royalty
+            if (!collectionConfig.configured) {
+                return (recipient, Math.mulDiv(salePrice, MAX_ROYALTY_BPS, BASIS));
+            }
             mintPriceUsd = collectionConfig.mintPriceUsd;
+            maxRoyaltyBps = collectionConfig.maxRoyaltyBps;
         }
 
-        // unconfigured mint price pays the max royalty
+        // a zero cap is royalty free, no need to consult the price feed
+        if (maxRoyaltyBps == 0) {
+            return (recipient, 0);
+        }
+
+        // unconfigured mint price pays the cap
         if (mintPriceUsd == 0) {
-            return (recipient, Math.mulDiv(salePrice, MAX_ROYALTY_BPS, BASIS));
+            return (recipient, Math.mulDiv(salePrice, maxRoyaltyBps, BASIS));
         }
 
-        // convert the sale price to USD, falling back to the max royalty if conversion is not possible
+        // convert the sale price to USD, falling back to the cap if conversion is not possible
         (uint256 saleUsd, bool ok) = _toUsd(salePrice, currency);
         if (!ok) {
-            return (recipient, Math.mulDiv(salePrice, MAX_ROYALTY_BPS, BASIS));
+            return (recipient, Math.mulDiv(salePrice, maxRoyaltyBps, BASIS));
         }
 
         // determine the royalty percentage based on USD values
@@ -132,10 +153,10 @@ contract LuciRoyaltyModel is Ownable2Step {
             return (recipient, 0);
         }
         if (saleUsd >= mintPriceUsd * 2) {
-            return (recipient, Math.mulDiv(salePrice, MAX_ROYALTY_BPS, BASIS));
+            return (recipient, Math.mulDiv(salePrice, maxRoyaltyBps, BASIS));
         }
         // sliding scale
-        royaltyToPay = Math.mulDiv(salePrice, (saleUsd - mintPriceUsd) * MAX_ROYALTY_BPS, mintPriceUsd * BASIS);
+        royaltyToPay = Math.mulDiv(salePrice, (saleUsd - mintPriceUsd) * maxRoyaltyBps, mintPriceUsd * BASIS);
     }
 
     /////////////////////////////////////////////////////////////////////
@@ -148,25 +169,36 @@ contract LuciRoyaltyModel is Ownable2Step {
         _setRoyaltyRecipient(newRoyaltyRecipient);
     }
 
-    /// @notice Configures a collection's mint price
+    /// @notice Configures a collection's mint price and royalty cap
     /// @dev Only owner
     /// @param mintPriceUsd The mint price in USD, with `USD_DECIMALS` decimals
-    function configureCollection(address collection, uint192 mintPriceUsd) external onlyOwner {
-        collections[collection] = CollectionConfig({configured: true, mintPriceUsd: mintPriceUsd});
+    /// @param maxRoyaltyBps The royalty charged at or above 2x mint price, at most `MAX_ROYALTY_BPS`. Zero is royalty free.
+    function configureCollection(address collection, uint192 mintPriceUsd, uint16 maxRoyaltyBps) external onlyOwner {
+        if (maxRoyaltyBps > MAX_ROYALTY_BPS) revert InvalidRoyaltyBps();
 
-        emit CollectionConfigured(collection, mintPriceUsd);
+        collections[collection] =
+            CollectionConfig({configured: true, maxRoyaltyBps: maxRoyaltyBps, mintPriceUsd: mintPriceUsd});
+
+        emit CollectionConfigured(collection, mintPriceUsd, maxRoyaltyBps);
     }
 
-    /// @notice Overrides the mint price for a particular token in a collection
+    /// @notice Overrides the mint price and royalty cap for a particular token in a collection
     /// @dev Only owner
     /// @param mintPriceUsd The mint price in USD, with `USD_DECIMALS` decimals
-    function overrideToken(address collection, uint256 tokenId, uint192 mintPriceUsd) external onlyOwner {
-        tokenOverrides[collection][tokenId] = TokenOverride({enabled: true, mintPriceUsd: mintPriceUsd});
+    /// @param maxRoyaltyBps The royalty charged at or above 2x mint price, at most `MAX_ROYALTY_BPS`. Zero is royalty free.
+    function overrideToken(address collection, uint256 tokenId, uint192 mintPriceUsd, uint16 maxRoyaltyBps)
+        external
+        onlyOwner
+    {
+        if (maxRoyaltyBps > MAX_ROYALTY_BPS) revert InvalidRoyaltyBps();
 
-        emit TokenOverriden(collection, tokenId, mintPriceUsd);
+        tokenOverrides[collection][tokenId] =
+            TokenOverride({enabled: true, maxRoyaltyBps: maxRoyaltyBps, mintPriceUsd: mintPriceUsd});
+
+        emit TokenOverriden(collection, tokenId, mintPriceUsd, maxRoyaltyBps);
     }
 
-    /// @notice Clears a token mint-price override so the collection mint price applies again
+    /// @notice Clears a token override so the collection mint price and royalty cap apply again
     /// @dev Only owner
     function clearTokenOverride(address collection, uint256 tokenId) external onlyOwner {
         delete tokenOverrides[collection][tokenId];
@@ -177,7 +209,7 @@ contract LuciRoyaltyModel is Ownable2Step {
     /// @notice Registers a sale currency and the price feed used to convert it to USD
     /// @dev Only owner. `currency` may be `NATIVE_CURRENCY` to configure the chain's native asset.
     /// @dev The feed is not probed at configure time: `oracleDecimals` is owner-declared, and conversion re-reads
-    ///      `decimals()` live and falls back to `MAX_ROYALTY_BPS` if it differs, so a wrong declaration or a scale
+    ///      `decimals()` live and falls back to the royalty cap if it differs, so a wrong declaration or a scale
     ///      change without a matching `answer` rescaling fails closed.
     /// @param currency The currency address, `NATIVE_CURRENCY` for the native asset
     /// @param oracle The <currency>/USD price feed
@@ -207,7 +239,7 @@ contract LuciRoyaltyModel is Ownable2Step {
         emit CurrencyConfigured(currency, oracle, currencyDecimals, oracleDecimals, maxAge);
     }
 
-    /// @notice Removes a sale currency, causing sales in it to fall back to the max royalty
+    /// @notice Removes a sale currency, causing sales in it to fall back to the royalty cap
     /// @dev Only owner
     function removeCurrency(address currency) external onlyOwner {
         delete currencies[currency];

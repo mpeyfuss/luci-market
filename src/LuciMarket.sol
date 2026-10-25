@@ -6,6 +6,7 @@ import {ReentrancyGuardTransient} from "@openzeppelin-contracts-5.6.1/utils/Reen
 import {IERC721} from "@openzeppelin-contracts-5.6.1/token/ERC721/IERC721.sol";
 import {Math} from "@openzeppelin-contracts-5.6.1/utils/math/Math.sol";
 import {MerkleProof} from "@openzeppelin-contracts-5.6.1/utils/cryptography/MerkleProof.sol";
+import {Strings} from "@openzeppelin-contracts-5.6.1/utils/Strings.sol";
 import {LuciRoyaltyModel} from "./LuciRoyaltyModel.sol";
 import {ISanctionsList} from "./interfaces/ISanctionsList.sol";
 
@@ -73,6 +74,9 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
 
     /// @notice Chainalysis Sanctions List
     address public sanctionsList;
+
+    /// @notice Base URI where selection Merkle trees are published, keyed by root (see `selectionUri`)
+    string public selectionBaseUri;
 
     /// @notice Collections that can be traded
     mapping(address collection => bool) public allowedCollections;
@@ -162,6 +166,7 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
     event PauseToggled(bool paused);
     event RoyaltyModelUpdated(address indexed oldRoyaltyModel, address indexed newRoyaltyModel);
     event SanctionsListUpdated(address indexed oldSanctionsList, address indexed newSanctionsList);
+    event SelectionBaseUriUpdated(string oldSelectionBaseUri, string newSelectionBaseUri);
     event TokenAdded(address indexed collection, uint256 indexed tokenId);
     event TokenRemoved(address indexed collection, uint256 indexed tokenId);
 
@@ -577,6 +582,15 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         emit SanctionsListUpdated(oldSanctionsList, newSanctionsList);
     }
 
+    /// @notice Update the base URI where selection Merkle trees are published
+    /// @dev Informational only - settlement never reads it. Include the trailing separator (e.g. `.../merkle/`).
+    function setSelectionBaseUri(string calldata newSelectionBaseUri) external onlyOwner {
+        string memory oldSelectionBaseUri = selectionBaseUri;
+        selectionBaseUri = newSelectionBaseUri;
+
+        emit SelectionBaseUriUpdated(oldSelectionBaseUri, newSelectionBaseUri);
+    }
+
     /////////////////////////////////////////////////////////////////////
     // VIEW FUNCTIONS
     /////////////////////////////////////////////////////////////////////
@@ -590,6 +604,16 @@ contract LuciMarket is Ownable2Step, ReentrancyGuardTransient {
         returns (bool)
     {
         return _isInSelection(selectionRoot, collection, tokenId, proof);
+    }
+
+    /// @notice Where to fetch the Merkle tree behind a selection root
+    /// @dev Returns `selectionBaseUri` followed by the root as `0x`-prefixed lowercase hex (66 characters), or an
+    ///      empty string when no base URI is set. Does not check that the tree exists or that any bid uses the root.
+    ///      A fetched tree is self-verifying: integrators should recompute its root and compare.
+    function selectionUri(bytes32 selectionRoot) external view returns (string memory) {
+        string memory baseUri = selectionBaseUri;
+        if (bytes(baseUri).length == 0) return "";
+        return string.concat(baseUri, Strings.toHexString(uint256(selectionRoot), 32));
     }
 
     /////////////////////////////////////////////////////////////////////
